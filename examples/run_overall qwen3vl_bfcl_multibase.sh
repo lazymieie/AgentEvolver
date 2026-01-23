@@ -33,9 +33,9 @@ export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export RAY_DISABLE_DASHBOARD=1
+#设置合成任务优势衰减
+export DEBUG_ARG="synth_decay"
 
-
-CUDA_VISIBLE_DEVICES=4,5,6,7 \
 python3 -m agentevolver.main_ppo \
     --config-path="$CONFIG_PATH" \
     --config-name='script_config' \
@@ -48,10 +48,11 @@ python3 -m agentevolver.main_ppo \
     exp_manager.init_exp_before_training=False \
     exp_manager.init_exp_only=False \
     exp_manager.reme.base_url=${em_url} \
-    exp_manager.reme.workspace_id="bfcl_3b_syndata" \
+    exp_manager.reme.workspace_id="qwen3vl_bfcl_multibase" \
     exp_manager.reme.enable_summarizer=True \
     exp_manager.reme.enable_context_generator=True \
     exp_manager.reme.updated_freq=0 \
+    exp_manager.reme.retrieve_top_k=5 \
     actor_rollout_ref.actor.off_cliprange_high=0.6 \
     attribution_driven_credit_assignment.enable=False \
     attribution_driven_credit_assignment.adca_grpo.enable_adca_metric=true \
@@ -103,9 +104,9 @@ python3 -m agentevolver.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger="['tensorboard','console']" \
     trainer.project_name="bfcl_qwen3-vl-4b" \
-    trainer.experiment_name="bfcl_qwen3-vl-4b_agentevolver" \
+    trainer.experiment_name="bfcl_multibase_qwen3-vl-4b_agentevolver" \
     trainer.nnodes=1 \
-    trainer.save_freq=10000 \
+    trainer.save_freq=10 \
     trainer.test_freq=10 \
     trainer.total_epochs=40 \
     trainer.val_before_train=False \

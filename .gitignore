@@ -158,6 +158,7 @@ third_party/
 tensorboard_log/
 **/events.out.tfevents.*
 tests/events.out.tfevents.*
+*.log
 
 # local db / cache
 my_chroma_db/
