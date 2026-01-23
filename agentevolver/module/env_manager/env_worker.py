@@ -37,7 +37,6 @@ class EnvWorker(object):
         self.instance_id: str = instance_id if instance_id is not None else uuid.uuid4().hex  # Set or generate the instance ID
         self.thread_index: int = thread_index  # Set the thread index
         self.tokenizer = tokenizer  # Store the tokenizer
-
     def execute(self, data_id: str, rollout_id: str, traj_exp_config: TrajExpConfig, agent_flow: BaseAgentFlow, tmux:dict,stop:list[bool], system_prompt: Optional[str] = None, **kwargs) -> Trajectory:
         """
         Executes the task in the environment, generates a trajectory, and returns it.
@@ -63,6 +62,18 @@ class EnvWorker(object):
                                                     params={'is_open_query': self.is_open_query})
 
             init_messages: list[dict] = init_response["state"]
+            # logger.debug(
+            #     "[EnvWorker] create_instance returned: "
+            #     f"keys={list(init_response.keys())}"
+            # )
+
+            # logger.debug(
+            #     "[EnvWorker] init_messages type=%s len=%s content=%s",
+            #     type(init_messages),
+            #     len(init_messages) if isinstance(init_messages, list) else None,
+            #     init_messages
+            # )
+
             assert isinstance(init_messages, list) and len(init_messages)==2, "init_messages must be list and its length must be 2"
             # replace query if new query is in task
             if self.task.query is not None:
@@ -105,6 +116,22 @@ class EnvWorker(object):
             # traj_cmt.metadata["task_train_exp_mode"] = traj_exp_config.train_mode
             # traj_cmt.metadata["add_exp"] = traj_exp_config.add_exp
             # traj_cmt.metadata["experience_list"] = traj_exp_config.experience_list
+            # logger.debug(
+            #     "[EnvWorker] BEFORE agent_flow.execute | "
+            #     f"task_id={self.task_id}, "
+            #     f"instance_id={self.instance_id}, "
+            #     f"query={self.task.query}"
+            # )
+
+            # logger.debug(
+            #     "[EnvWorker] init_messages snapshot: %s",
+            #     init_messages
+            # )
+
+            # logger.debug(
+            #     "[EnvWorker] traj_exp_config: %s",
+            #     traj_exp_config
+            # )
 
             traj_cmt: Trajectory = agent_flow.execute(
                 context_manager=traj_cmt,
@@ -121,10 +148,18 @@ class EnvWorker(object):
                 query=self.task.query,
                 **kwargs
             )  # ⭐ Execute the task and generate the trajectory
+            # logger.debug(
+            #     "[EnvWorker] AFTER agent_flow.execute | "
+            #     f"trajectory type={type(traj_cmt)}"
+            # )
             self.env.release_instance(self.instance_id)
 
         except Exception as e:
-            self.env.release_instance(self.instance_id)
-            raise RuntimeError(f"env.create_instance failed! error={e.args}") from e
+            import traceback
+            traceback.print_exc()
+            raise RuntimeError(
+                f"env.create_instance failed! error={repr(e)}"
+            ) from e
+
 
         return traj_cmt

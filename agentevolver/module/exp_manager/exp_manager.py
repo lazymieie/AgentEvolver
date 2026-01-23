@@ -14,8 +14,8 @@ from agentevolver.client.em_client import EMClient
 
 @dataclass
 class TaskExpConfig:
-    add_exp: List[bool]
-    train_mode: str = "discard"     # "keep" | "discard"
+    add_exp: List[bool]  #长度等于 rollout_n
+    train_mode: str = "discard"     # "keep" | "discard" 训练时是否丢弃经验
 
 @dataclass
 class TrajExpConfig:
@@ -224,6 +224,8 @@ class ExperienceWorker(object):
         """
         self.config: DictConfig = config
         self.experience_template = self.config.exp_manager.experience_template
+        # artifact_recorder will be set by ExperienceManager if available
+        self.artifact_recorder = None
     
     def manage_rollout_context(self, init_messages: List[dict], traj_exp_config: TrajExpConfig) -> Tuple[List[dict], TrajExpConfig]:
         """
@@ -264,12 +266,60 @@ class ExperienceWorker(object):
             logger.info("Experience is empty!")
             return init_messages, traj_exp_config
 
+        # Record experience retrieval
+        if hasattr(self, 'artifact_recorder') and self.artifact_recorder and self.artifact_recorder.enable:
+            try:
+                # Convert history_experience to list format for recording
+                topk_list = []
+                if isinstance(history_experience, list):
+                    for exp in history_experience:
+                        if isinstance(exp, dict):
+                            topk_list.append({
+                                "exp_id": exp.get("id", exp.get("exp_id", "unknown")),
+                                "score": exp.get("score", exp.get("similarity", 0.0)),
+                                "when_to_use": exp.get("when_to_use", ""),
+                                "content": exp.get("content", str(exp)),
+                                "source_task_id": exp.get("source_task_id", None),
+                                "source_traj_id": exp.get("source_traj_id", None),
+                            })
+                elif isinstance(history_experience, str):
+                    # If it's a string, treat as single experience
+                    topk_list.append({
+                        "exp_id": "unknown",
+                        "score": 1.0,
+                        "when_to_use": "",
+                        "content": history_experience,
+                    })
+                
+                task_id = getattr(trajectory, 'task_id', traj_exp_config.data_id if hasattr(traj_exp_config, 'data_id') else "unknown")
+                self.artifact_recorder.write_experience_retrieval(
+                    task_id=task_id,
+                    query=trajectory.query,
+                    topk=topk_list,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record experience retrieval: {e}")
+
         # apply experience to trajectory
-        logger.info(f"Retrieved history experience: {history_experience}")
+        # logger.info(f"Retrieved history experience: {history_experience}")
         formatted_experience = self.experience_template.format(history_experience)
         new_content = formatted_experience + trajectory.steps[-1]["content"]
+        original_content = trajectory.steps[-1]["content"]
         trajectory.steps[-1]["content"] = new_content
         traj_exp_config.experience_list = traj_exp_config.experience_list + [formatted_experience]
+
+        # Record experience injection
+        if hasattr(self, 'artifact_recorder') and self.artifact_recorder and self.artifact_recorder.enable:
+            try:
+                task_id = getattr(trajectory, 'task_id', traj_exp_config.data_id if hasattr(traj_exp_config, 'data_id') else "unknown")
+                self.artifact_recorder.write_experience_injection(
+                    task_id=task_id,
+                    injection_template_name=self.experience_template,
+                    prompt_with_exp=new_content,
+                    prompt_without_exp=original_content,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record experience injection: {e}")
 
         return trajectory.steps, traj_exp_config
     
@@ -317,6 +367,26 @@ class ExperienceWorker(object):
             if match:
                 experience = match.group(1)
                 cleaned_message = re.sub(pattern, '', message, flags=re.DOTALL)
+                
+                # Record experience stripping
+                if hasattr(self, 'artifact_recorder') and self.artifact_recorder and self.artifact_recorder.enable:
+                    try:
+                        task_id = metadata_config.get('task_id', 'unknown')
+                        # Extract token spans if possible (simplified - would need tokenizer)
+                        token_spans = []
+                        if match:
+                            token_spans.append({
+                                "start": match.start(),
+                                "end": match.end(),
+                            })
+                        self.artifact_recorder.write_experience_stripping(
+                            task_id=task_id,
+                            before=message,
+                            after=cleaned_message,
+                            token_spans=token_spans if token_spans else None,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to record experience stripping: {e}")
 
         
         return experience, cleaned_message

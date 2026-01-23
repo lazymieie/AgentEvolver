@@ -17,12 +17,13 @@ Note that we don't combine the main with ray_trainer as ray_trainer is used by o
 """
 # from best_logger import register_logger
 import torch
-from agentevolver.client.llm_client import DashScopeClient
-from agentevolver.module.task_manager.base import NaiveTaskObjectiveRetrieval
-from agentevolver.module.task_manager.data_mixture import OriginalOnlyStrategy, UnifiedMixtureStrategy
-from agentevolver.module.task_manager.strategies.random import LlmRandomSamplingExploreStrategy
-from agentevolver.module.task_manager.task_manager import TaskManager
-
+# Move these imports inside TaskRunner.run() to avoid serialization issues
+# from agentevolver.client.llm_client import DashScopeClient
+# from agentevolver.module.task_manager.base import NaiveTaskObjectiveRetrieval
+# from agentevolver.module.task_manager.data_mixture import OriginalOnlyStrategy, UnifiedMixtureStrategy
+# from agentevolver.module.task_manager.strategies.random import LlmRandomSamplingExploreStrategy
+# from agentevolver.module.task_manager.task_manager import TaskManager
+from loguru import logger
 # non_console_mods = ["appworld_io"]
 # register_logger(non_console_mods=non_console_mods, auto_clean_mods=[], base_log_path="logs/agentevolver", debug=True)
 
@@ -30,12 +31,11 @@ import os
 import hydra
 import ray
 
-from agentevolver.module.task_manager.env_profiles import EnvProfile
-from verl.trainer.ppo.reward import load_reward_manager
-
-from agentevolver.module.trainer.ae_ray_trainer import AgentEvolverRayPPOTrainer
-
-from verl.trainer.ppo import core_algos
+# Move these imports inside TaskRunner.run() to avoid serialization issues
+# from agentevolver.module.task_manager.env_profiles import EnvProfile
+# from verl.trainer.ppo.reward import load_reward_manager
+# from agentevolver.module.trainer.ae_ray_trainer import AgentEvolverRayPPOTrainer
+# from verl.trainer.ppo import core_algos
 if "kl_control" in os.environ.get("DEBUG_ARG",""):
     print("monkeypatching kl loss")
     def kl_penalty(logprob: torch.FloatTensor, ref_logprob: torch.FloatTensor, kl_penalty) -> torch.FloatTensor:
@@ -241,6 +241,7 @@ class TaskRunner:
             raise NotImplementedError
 
         from verl.trainer.ppo.ray_trainer import ResourcePoolManager, Role
+        from verl.trainer.ppo.reward import load_reward_manager
 
         role_worker_mapping = {
             Role.ActorRollout: ray.remote(actor_rollout_cls),
@@ -283,6 +284,39 @@ class TaskRunner:
 
         from verl.utils.dataset.rl_dataset import collate_fn
 
+        # Import modules inside TaskRunner.run() to avoid serialization issues
+        from agentevolver.client.llm_client import DashScopeClient
+        from agentevolver.module.task_manager.base import NaiveTaskObjectiveRetrieval
+        from agentevolver.module.task_manager.data_mixture import OriginalOnlyStrategy, UnifiedMixtureStrategy
+        from agentevolver.module.task_manager.strategies.random import LlmRandomSamplingExploreStrategy
+        from agentevolver.module.task_manager.task_manager import TaskManager
+        from agentevolver.module.task_manager.env_profiles import EnvProfile
+        from agentevolver.module.trainer.ae_ray_trainer import AgentEvolverRayPPOTrainer
+        from verl.trainer.ppo import core_algos
+
+        # init artifact recorder
+        from agentevolver.utils.artifact_recorder import ArtifactRecorder
+        artifact_cfg = config.get("debug_artifacts", {})
+        artifact_recorder = ArtifactRecorder(
+            enable=artifact_cfg.get("enable", False),
+            out_dir=artifact_cfg.get("out_dir", f"{config.trainer.rollout_data_dir}/artifacts"),
+            max_str_chars=artifact_cfg.get("max_str_chars", 20000),
+            dump_prompts=artifact_cfg.get("dump_prompts", True),
+            dump_steps=artifact_cfg.get("dump_steps", True),
+            dump_experiences=artifact_cfg.get("dump_experiences", True),
+            dump_adca=artifact_cfg.get("dump_adca", True),
+            dump_filters=artifact_cfg.get("dump_filters", True),
+            dump_rewards=artifact_cfg.get("dump_rewards", True),
+            max_examples_per_step=artifact_cfg.get("max_examples_per_step", 3),
+        )
+        if artifact_recorder.enable:
+            from loguru import logger as loguru_logger
+            loguru_logger.info(f"Artifact recording enabled: out_dir={artifact_recorder.out_dir_str}")
+            artifact_recorder.generate_readme()
+        else:
+            from loguru import logger as loguru_logger
+            loguru_logger.info("Artifact recording disabled (set debug_artifacts.enable=true to enable)")
+
         # init task manager
         llm_client=DashScopeClient(model_name=config.task_manager.llm_client)
         train_task_manager=TaskManager(
@@ -304,6 +338,7 @@ class TaskRunner:
             num_explore_threads=config.task_manager.num_explore_threads,
             n=config.task_manager.n,
         )  # ⭐ Initialize the training task manager with specified configurations
+        train_task_manager.artifact_recorder = artifact_recorder
         val_task_manager=TaskManager(
             config=config,
             exploration_strategy=config.task_manager.strategy,
@@ -318,6 +353,7 @@ class TaskRunner:
             num_explore_threads=config.task_manager.num_explore_threads,
             n=config.task_manager.n,
         )  # ⭐ Initialize the validation task manager with specified configurations
+        val_task_manager.artifact_recorder = artifact_recorder
         trainer = AgentEvolverRayPPOTrainer(
             config=config,
             tokenizer=tokenizer,
@@ -332,6 +368,7 @@ class TaskRunner:
             collate_fn=collate_fn,
             device_name=config.trainer.device,
         )  # ⭐ Initialize the PPO trainer with the given parameters
+        trainer.artifact_recorder = artifact_recorder
         trainer.init_workers()  # ⭐ Initialize the workers for the trainer
         trainer.fit()  # ⭐ Start the training process
 

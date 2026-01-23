@@ -68,6 +68,7 @@ from agentevolver.module.adv_processor.adca_grpo_pipeline import apply_adca_grpo
 
 from agentevolver.module.exp_manager.exp_manager import ExperienceManager
 
+import time
 
 def parse_reward_from_dataproto(data: DataProto, return_dict=False) -> dict | torch.Tensor:
     """
@@ -486,9 +487,15 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
         self.reward_fn = parse_reward_from_dataproto
         self.val_reward_fn = parse_reward_from_dataproto
 
-        self.env_manager = ParallelEnvManager(config=self.config, async_rollout_manager=self.async_rollout_manager, max_parallel=self.config.actor_rollout_ref.rollout.max_env_worker)
+        self.env_manager = ParallelEnvManager(config=self.config, async_rollout_manager=self.async_rollout_manager, max_parallel=self.config.actor_rollout_ref.rollout.max_env_worker)  # ⭐ Create the parallel environment manager
+        # Attach artifact_recorder to env_manager (will be passed to AgentFlow)
+        if hasattr(self, 'artifact_recorder'):
+            self.env_manager.artifact_recorder = self.artifact_recorder
         self.thread_pool = ThreadPoolExecutor(max_workers=self.config.thread_pool.max_workers)
         self.exp_manager = ExperienceManager(config=self.config)
+        # Attach artifact_recorder to exp_manager (will be passed to ExperienceWorker)
+        if hasattr(self, 'artifact_recorder'):
+            self.exp_manager.artifact_recorder = self.artifact_recorder
 
 
     def _create_dataloader_from_manager(self, collate_fn, shuffle_trainset: bool = True):
@@ -877,14 +884,113 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
 
             else:
                 self.async_rollout_manager.wake_up()
-                tasks = [Task(
-                            task_id=test_gen_batch.non_tensor_batch["extras"][i]["task_id"],
-                            query=test_gen_batch.non_tensor_batch["extras"][i]['new_query'],
-                            metadata=test_gen_batch.non_tensor_batch["extras"][i]['metadata'],
-                            env_type=self.config.env_service.env_type,
-                            open_query=test_gen_batch.non_tensor_batch["extras"][i]['open_query'],
-                            # evaluator=gen_batch.non_tensor_batch['extras'][i]['evaluator'], # avoid potential bugs
-                         ) for i in range(len(test_gen_batch))]
+                extras = test_gen_batch.non_tensor_batch.get("extras")
+
+                # print("[DEBUG] extras type:", type(extras))
+
+                # if isinstance(extras, list):
+                #     # print("[DEBUG] extras[0] type:", type(extras[0]))
+                #     # print("[DEBUG] extras[0] value:", extras[0])
+                # else:
+                #     print("[DEBUG] extras value:", extras)
+                import json
+                import numpy as np
+
+                def extract_task_fields(extras, i):
+                    """
+                    Normalize extras[i] into a dict with required task fields.
+                    """
+                    if extras is None:
+                        raise ValueError("extras is None")
+
+                    extra_i = extras[i]
+
+                    # --- case 1: 如果是 numpy 的标量字符串 ---
+                    if isinstance(extra_i, np.generic):
+                        # 转换为 Python 原生类型
+                        extra_i = extra_i.item()
+                    
+                    # --- case 2: 字符串（可能是 JSON 字符串）---
+                    if isinstance(extra_i, str):
+                        try:
+                            # 尝试解析 JSON
+                            parsed = json.loads(extra_i)
+                            if isinstance(parsed, dict):
+                                return {
+                                    "task_id": parsed.get("task_id", f"task_{i}"),
+                                    "query": parsed.get("new_query") or parsed.get("query"),
+                                    "metadata": parsed.get("metadata", {}),
+                                    "open_query": bool(parsed.get("open_query", False)),
+                                }
+                            else:
+                                # JSON 解析出来不是字典，当作普通字符串处理
+                                return {
+                                    "task_id": extra_i,
+                                    "query": None,
+                                    "metadata": {},
+                                    "open_query": False,
+                                }
+                        except (json.JSONDecodeError, TypeError):
+                            # 不是合法 JSON，当作普通字符串
+                            return {
+                                "task_id": extra_i,
+                                "query": None,
+                                "metadata": {},
+                                "open_query": False,
+                            }
+
+                    # --- case 3: dict（理想情况） ---
+                    if isinstance(extra_i, dict):
+                        return {
+                            "task_id": extra_i.get("task_id", f"task_{i}"),
+                            "query": extra_i.get("new_query") or extra_i.get("query"),
+                            "metadata": extra_i.get("metadata", {}),
+                            "open_query": bool(extra_i.get("open_query", False)),
+                        }
+
+                    # --- case 4: 其他类型 ---
+                    # 尝试转换为字符串处理
+                    try:
+                        return {
+                            "task_id": str(extra_i),
+                            "query": None,
+                            "metadata": {},
+                            "open_query": False,
+                        }
+                    except:
+                        raise TypeError(
+                            f"extras[{i}] must be dict, str, or JSON string, got {type(extra_i)}: {extra_i}"
+                        )
+
+
+                extras = test_gen_batch.non_tensor_batch.get("extras")
+                tasks = []
+                for i in range(len(test_gen_batch)):
+                    fields = extract_task_fields(extras, i)
+
+                    tasks.append(Task(
+                        task_id=fields["task_id"],
+                        query=fields["query"],
+                        metadata=fields["metadata"],
+                        open_query=fields["open_query"],
+                        env_type=self.config.env_service.env_type,
+                    ))
+                # 在创建 tasks 后添加调试输出
+                # print(f"[DEBUG] Created {len(tasks)} tasks:")
+                for i, task in enumerate(tasks):
+                    # print(f"  Task {i}: task_id={task.task_id}, query={task.query}, metadata={task.metadata}")
+                    # 确保 task_id 是正确的字符串，而不是 JSON
+                    if isinstance(task.task_id, str) and task.task_id.startswith('{'):
+                        print(f"    WARNING: task_id looks like JSON: {task.task_id}")
+                    #gjx
+                # tasks = [Task(
+                #             task_id = extract_task_id(extras, i),
+                #             query=test_gen_batch.non_tensor_batch["extras"][i]['new_query'],
+                #             metadata=test_gen_batch.non_tensor_batch["extras"][i]['metadata'],
+                #             env_type=self.config.env_service.env_type,
+                #             open_query=test_gen_batch.non_tensor_batch["extras"][i]['open_query'],
+                #             # evaluator=gen_batch.non_tensor_batch['extras'][i]['evaluator'], # avoid potential bugs
+                #          ) for i in range(len(test_gen_batch))]
                 task_exp_configs = self.exp_manager.get_complete_exp_configs(tasks, mode="validate")
                 print("=" * 10 + "start validate rollout" + "=" * 10)
                 trajectories = self.env_manager.rollout(tasks, task_exp_configs, mode="validate", epoch=f"test.1.{i}")  # ⭐ Execute the rollout to generate trajectories
@@ -1006,14 +1112,108 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
 
             else:
                 self.async_rollout_manager.wake_up()
-                tasks = [Task(
-                            task_id=test_gen_batch.non_tensor_batch["extras"][i]["task_id"],
-                            query=test_gen_batch.non_tensor_batch["extras"][i]['new_query'],
-                            metadata=test_gen_batch.non_tensor_batch["extras"][i]['metadata'],
-                            env_type=self.config.env_service.env_type,
-                            open_query=test_gen_batch.non_tensor_batch["extras"][i]['open_query'],
-                            # evaluator=gen_batch.non_tensor_batch['extras'][i]['evaluator'], # avoid potential bugs
-                         ) for i in range(len(test_gen_batch))]
+                extras = test_gen_batch.non_tensor_batch.get("extras")
+                # print("[DEBUG] extras type:", type(extras))
+                # if isinstance(extras, list):
+                #     print("[DEBUG] extras[0] type:", type(extras[0]))
+                #     print("[DEBUG] extras[0] value:", extras[0])
+                # else:
+                #     print("[DEBUG] extras value:", extras)
+                import json
+                import numpy as np
+                def extract_task_fields(extras, i):
+                    """
+                    Normalize extras[i] into a dict with required task fields.
+                    """
+                    if extras is None:
+                        raise ValueError("extras is None")
+
+                    extra_i = extras[i]
+
+                    # --- case 1: 如果是 numpy 的标量字符串 ---
+                    if isinstance(extra_i, np.generic):
+                        # 转换为 Python 原生类型
+                        extra_i = extra_i.item()
+                    
+                    # --- case 2: 字符串（可能是 JSON 字符串）---
+                    if isinstance(extra_i, str):
+                        try:
+                            # 尝试解析 JSON
+                            parsed = json.loads(extra_i)
+                            if isinstance(parsed, dict):
+                                return {
+                                    "task_id": parsed.get("task_id", f"task_{i}"),
+                                    "query": parsed.get("new_query") or parsed.get("query"),
+                                    "metadata": parsed.get("metadata", {}),
+                                    "open_query": bool(parsed.get("open_query", False)),
+                                }
+                            else:
+                                # JSON 解析出来不是字典，当作普通字符串处理
+                                return {
+                                    "task_id": extra_i,
+                                    "query": None,
+                                    "metadata": {},
+                                    "open_query": False,
+                                }
+                        except (json.JSONDecodeError, TypeError):
+                            # 不是合法 JSON，当作普通字符串
+                            return {
+                                "task_id": extra_i,
+                                "query": None,
+                                "metadata": {},
+                                "open_query": False,
+                            }
+
+                    # --- case 3: dict（理想情况） ---
+                    if isinstance(extra_i, dict):
+                        return {
+                            "task_id": extra_i.get("task_id", f"task_{i}"),
+                            "query": extra_i.get("new_query") or extra_i.get("query"),
+                            "metadata": extra_i.get("metadata", {}),
+                            "open_query": bool(extra_i.get("open_query", False)),
+                        }
+
+                    # --- case 4: 其他类型 ---
+                    # 尝试转换为字符串处理
+                    try:
+                        return {
+                            "task_id": str(extra_i),
+                            "query": None,
+                            "metadata": {},
+                            "open_query": False,
+                        }
+                    except:
+                        raise TypeError(
+                            f"extras[{i}] must be dict, str, or JSON string, got {type(extra_i)}: {extra_i}"
+                        )
+                extras = test_gen_batch.non_tensor_batch.get("extras")
+                tasks = []
+                for i in range(len(test_gen_batch)):
+                    fields = extract_task_fields(extras, i)
+
+                    tasks.append(Task(
+                        task_id=fields["task_id"],
+                        query=fields["query"],
+                        metadata=fields["metadata"],
+                        open_query=fields["open_query"],
+                        env_type=self.config.env_service.env_type,
+                    ))
+                # 在创建 tasks 后添加调试输出
+                # print(f"[DEBUG] Created {len(tasks)} tasks:")
+                for i, task in enumerate(tasks):
+                    # print(f"  Task {i}: task_id={task.task_id}, query={task.query}, metadata={task.metadata}")
+                    # 确保 task_id 是正确的字符串，而不是 JSON
+                    if isinstance(task.task_id, str) and task.task_id.startswith('{'):
+                        print(f"    WARNING: task_id looks like JSON: {task.task_id}")
+                    #gjx
+                # tasks = [Task(
+                #             task_id=test_gen_batch.non_tensor_batch["extras"][i]["task_id"],
+                #             query=test_gen_batch.non_tensor_batch["extras"][i]['new_query'],
+                #             metadata=test_gen_batch.non_tensor_batch["extras"][i]['metadata'],
+                #             env_type=self.config.env_service.env_type,
+                #             open_query=test_gen_batch.non_tensor_batch["extras"][i]['open_query'],
+                #             # evaluator=gen_batch.non_tensor_batch['extras'][i]['evaluator'], # avoid potential bugs
+                #          ) for i in range(len(test_gen_batch))]
                 task_exp_configs = self.exp_manager.get_complete_exp_configs(tasks, mode="validate")
                 print("=" * 10 + "start validate rollout" + "=" * 10)
                 trajectories = self.env_manager.rollout(tasks, task_exp_configs, mode="validate", epoch=f"test.1.{i}")  # ⭐ Execute the rollout to generate trajectories
@@ -1024,7 +1224,109 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
             self.exp_manager.summarize_in_batch(trajectories)
         
         return
+    def _compute_rollout_statistics(self, batch: DataProto, trajectories: List[Trajectory], epoch: int, batch_idx: int, rollout_start_time: float = None):
+        """
+        计算并打印 rollout 相关的统计信息，包括：
+        - prompt 和 response 的长度分布
+        - 真实上下文长度
+        - rollout 并发情况
 
+        Args:
+            batch (DataProto): 包含 prompts 和 responses 的数据批次
+            trajectories (List[Trajectory]): rollout 生成的轨迹列表
+            epoch (int): 当前 epoch 编号
+            batch_idx (int): 当前 batch 编号
+            rollout_start_time (float, optional): rollout 开始时间，用于计算耗时
+
+        Returns:
+            dict: 包含统计信息的字典
+        """
+        stats = {}
+        
+        # 1. 计算 prompt 和 response 长度
+        prompts = batch.batch["prompts"]  # (bs, prompt_len)
+        responses = batch.batch["responses"]  # (bs, response_len)
+        attention_mask = batch.batch["attention_mask"]  # (bs, total_len)
+        
+        prompt_lengths = prompts.shape[-1]  # prompt 的固定长度
+        response_lengths = attention_mask[:, prompt_lengths:].sum(dim=1).cpu().numpy()  # 实际 response 长度（排除padding）
+        total_lengths = attention_mask.sum(dim=1).cpu().numpy()  # 总上下文长度（排除padding）
+        
+        # 计算统计量
+        stats["prompt_length"] = {
+            "fixed": prompt_lengths,
+            "actual_mean": prompt_lengths,  # prompt 通常是固定长度
+        }
+        stats["response_length"] = {
+            "max": int(response_lengths.max()),
+            "min": int(response_lengths.min()),
+            "mean": float(response_lengths.mean()),
+            "median": float(np.median(response_lengths)),
+            "std": float(response_lengths.std()),
+            "p50": float(np.percentile(response_lengths, 50)),
+            "p90": float(np.percentile(response_lengths, 90)),
+            "p95": float(np.percentile(response_lengths, 95)),
+            "p99": float(np.percentile(response_lengths, 99)),
+        }
+        stats["context_length"] = {
+            "max": int(total_lengths.max()),
+            "min": int(total_lengths.min()),
+            "mean": float(total_lengths.mean()),
+            "median": float(np.median(total_lengths)),
+            "std": float(total_lengths.std()),
+            "p50": float(np.percentile(total_lengths, 50)),
+            "p90": float(np.percentile(total_lengths, 90)),
+            "p95": float(np.percentile(total_lengths, 95)),
+            "p99": float(np.percentile(total_lengths, 99)),
+        }
+        
+        # 2. 计算 rollout 并发情况
+        stats["rollout_concurrency"] = {
+            "max_parallel_workers": self.env_manager.max_parallel,
+            "total_tasks": len(trajectories),
+            "num_terminated": sum([traj.is_terminated for traj in trajectories]),
+            "num_valid": sum([len(traj.steps) > 0 for traj in trajectories]),
+        }
+        
+        # 如果有 rollout 开始时间，计算耗时
+        if rollout_start_time is not None:
+            rollout_duration = time.time() - rollout_start_time
+            stats["rollout_concurrency"]["duration_seconds"] = float(rollout_duration)
+            stats["rollout_concurrency"]["tasks_per_second"] = float(len(trajectories) / rollout_duration) if rollout_duration > 0 else 0.0
+            stats["rollout_concurrency"]["effective_concurrency"] = float(len(trajectories) / rollout_duration * self.env_manager.max_parallel) if rollout_duration > 0 else 0.0
+        
+        # 3. 打印统计信息
+        print("\n" + "=" * 80)
+        print(f"[Rollout Statistics] Step {self.global_steps}, Epoch {epoch}, Batch {batch_idx}")
+        print("=" * 80)
+        print(f"📏 Prompt Length: fixed={stats['prompt_length']['fixed']}")
+        print(f"📝 Response Length: mean={stats['response_length']['mean']:.1f}, "
+              f"median={stats['response_length']['median']:.1f}, "
+              f"std={stats['response_length']['std']:.1f}, "
+              f"min={stats['response_length']['min']}, max={stats['response_length']['max']}")
+        print(f"   Percentiles: p50={stats['response_length']['p50']:.1f}, "
+              f"p90={stats['response_length']['p90']:.1f}, "
+              f"p95={stats['response_length']['p95']:.1f}, "
+              f"p99={stats['response_length']['p99']:.1f}")
+        print(f"🌐 Context Length (prompt+response): mean={stats['context_length']['mean']:.1f}, "
+              f"median={stats['context_length']['median']:.1f}, "
+              f"std={stats['context_length']['std']:.1f}, "
+              f"min={stats['context_length']['min']}, max={stats['context_length']['max']}")
+        print(f"   Percentiles: p50={stats['context_length']['p50']:.1f}, "
+              f"p90={stats['context_length']['p90']:.1f}, "
+              f"p95={stats['context_length']['p95']:.1f}, "
+              f"p99={stats['context_length']['p99']:.1f}")
+        print(f"⚡ Rollout Concurrency: max_workers={stats['rollout_concurrency']['max_parallel_workers']}, "
+              f"total_tasks={stats['rollout_concurrency']['total_tasks']}, "
+              f"terminated={stats['rollout_concurrency']['num_terminated']}, "
+              f"valid={stats['rollout_concurrency']['num_valid']}")
+        if rollout_start_time is not None:
+            print(f"   Duration: {stats['rollout_concurrency']['duration_seconds']:.2f}s, "
+                  f"Throughput: {stats['rollout_concurrency']['tasks_per_second']:.2f} tasks/s, "
+                  f"Effective Concurrency: {stats['rollout_concurrency']['effective_concurrency']:.2f}")
+        print("=" * 80 + "\n")
+        
+        return stats
 
     def fit(self):
         """
@@ -1080,7 +1382,7 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
         last_val_metrics = None
         
         for epoch in range(self.config.trainer.total_epochs):
-            for i, batch_dict in enumerate(self.train_dataloader):
+            for i1, batch_dict in enumerate(self.train_dataloader):
                 metrics = {}
                 timing_raw = {}
                 batch: DataProto = DataProto.from_single_dict(batch_dict)
@@ -1114,27 +1416,167 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                             gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
                         else:
                             self.async_rollout_manager.wake_up()
-                            # gen_batch_output = self.explorer_manager.rollout(gen_batch)
+                                        # gen_batch_output = self.explorer_manager.rollout(gen_batch)
+                            extras = gen_batch.non_tensor_batch.get("extras")
 
-                            tasks = [Task(
-                                        task_id=gen_batch.non_tensor_batch["extras"][i]["task_id"],
-                                        query=gen_batch.non_tensor_batch["extras"][i]['new_query'],
-                                        env_type=self.config.env_service.env_type,
-                                        open_query=gen_batch.non_tensor_batch["extras"][i]['open_query'],
-                                        metadata=gen_batch.non_tensor_batch["extras"][i]['metadata'],
-                                        evaluator=gen_batch.non_tensor_batch['extras'][i]['evaluator'],
-                                        ground_truth=gen_batch.non_tensor_batch['extras'][i]['ground_truth']
-                                    ) for i in range(len(gen_batch))
-                            ]
+                            # print("[DEBUG] extras type:", type(extras))
+
+                            # if isinstance(extras, list):
+                            #     print("[DEBUG] extras[0] type:", type(extras[0]))
+                            #     print("[DEBUG] extras[0] value:", extras[0])
+                            # else:
+                            #     print("[DEBUG] extras value:", extras)
+                            import json
+                            import numpy as np
+
+                            def extract_task_fields(extras, i):
+                                """
+                                Normalize extras[i] into a dict with required task fields.
+                                """
+                                if extras is None:
+                                    raise ValueError("extras is None")
+
+                                extra_i = extras[i]
+
+                                # --- case 1: 如果是 numpy 的标量字符串 ---
+                                if isinstance(extra_i, np.generic):
+                                    # 转换为 Python 原生类型
+                                    extra_i = extra_i.item()
+                                
+                                # --- case 2: 字符串（可能是 JSON 字符串）---
+                                if isinstance(extra_i, str):
+                                    try:
+                                        # 尝试解析 JSON
+                                        parsed = json.loads(extra_i)
+                                        if isinstance(parsed, dict):
+                                            return {
+                                                "task_id": parsed.get("task_id", f"task_{i}"),
+                                                "query": parsed.get("new_query") or parsed.get("query"),
+                                                "metadata": parsed.get("metadata", {}),
+                                                "open_query": bool(parsed.get("open_query", False)),
+                                                "evaluator": parsed.get("evaluator", "env"),  # 添加
+                                                "ground_truth": parsed.get("ground_truth")  # 添加
+                                            }
+                                        else:
+                                            # JSON 解析出来不是字典，当作普通字符串处理
+                                            return {
+                                                "task_id": extra_i,
+                                                "query": None,
+                                                "metadata": {},
+                                                "open_query": False,
+                                                "evaluator": "env",  # 默认值
+                                                "ground_truth": None  # 默认值
+                                            }
+                                    except (json.JSONDecodeError, TypeError):
+                                        # 不是合法 JSON，当作普通字符串
+                                        return {
+                                            "task_id": extra_i,
+                                            "query": None,
+                                            "metadata": {},
+                                            "open_query": False,
+                                            "evaluator": "env",  # 默认值
+                                            "ground_truth": None  # 默认值
+                                        }
+
+                                # --- case 3: dict（理想情况） ---
+                                if isinstance(extra_i, dict):
+                                    return {
+                                        "task_id": extra_i.get("task_id", f"task_{i}"),
+                                        "query": extra_i.get("new_query") or extra_i.get("query"),
+                                        "metadata": extra_i.get("metadata", {}),
+                                        "open_query": bool(extra_i.get("open_query", False)),
+                                        "evaluator": extra_i.get("evaluator", "env"),  # 添加
+                                        "ground_truth": extra_i.get("ground_truth")  # 添加
+                                    }
+
+                                # --- case 4: 其他类型 ---
+                                # 尝试转换为字符串处理
+                                try:
+                                    return {
+                                        "task_id": str(extra_i),
+                                        "query": None,
+                                        "metadata": {},
+                                        "open_query": False,
+                                        "evaluator": "env",  # 默认值
+                                        "ground_truth": None  # 默认值
+                                    }
+                                except:
+                                    raise TypeError(
+                                        f"extras[{i}] must be dict, str, or JSON string, got {type(extra_i)}: {extra_i}"
+                                    )
+
+
+                            extras = gen_batch.non_tensor_batch.get("extras")
+                            tasks = []
+                            for i in range(len(gen_batch)):
+                                fields = extract_task_fields(extras, i)
+
+                                tasks.append(Task(
+                                    task_id=fields["task_id"],
+                                    query=fields["query"],
+                                    metadata=fields["metadata"],
+                                    open_query=fields["open_query"],
+                                    env_type=self.config.env_service.env_type,
+                                    evaluator=fields["evaluator"],  # 添加
+                                    ground_truth=fields["ground_truth"]  # 添加         
+                                ))
+                            # 在创建 tasks 后添加调试输出
+                            print(f"[DEBUG] Created {len(tasks)} tasks:")
+                            for i, task in enumerate(tasks):
+                                print(f"  Task {i}: task_id={task.task_id}, query={task.query}, metadata={task.metadata},ground_truth={task.ground_truth}")
+                                # 确保 task_id 是正确的字符串，而不是 JSON
+                                if isinstance(task.task_id, str) and task.task_id.startswith('{'):
+                                    print(f"    WARNING: task_id looks like JSON: {task.task_id}")
+                                #gjx
+                            # tasks = [Task(
+                            #             task_id=gen_batch.non_tensor_batch["extras"][i]["task_id"],
+                            #             query=gen_batch.non_tensor_batch["extras"][i]['new_query'],
+                            #             env_type=self.config.env_service.env_type,
+                            #             open_query=gen_batch.non_tensor_batch["extras"][i]['open_query'],
+                            #             metadata=gen_batch.non_tensor_batch["extras"][i]['metadata'],
+                            #             evaluator=gen_batch.non_tensor_batch['extras'][i]['evaluator'],
+                            #             ground_truth=gen_batch.non_tensor_batch['extras'][i]['ground_truth']
+                            #         ) for i in range(len(gen_batch))
+                            # ]
                             task_exp_configs = self.exp_manager.get_complete_exp_configs(tasks, mode="sample")
                             assert len(task_exp_configs)==len(tasks), "{len(task_exp_configs)=}, {len(gen_batch)=}"
 
                             # TODO enable tracing by jinli 0619
                             print("=" * 10 + "start fit rollout" + "=" * 10)
-                            trajectories = self.env_manager.rollout(tasks, task_exp_configs, mode="sample", epoch=f"train.{epoch}.{i}")  # ⭐ Generate trajectories using the environment manager
+                            rollout_start_time = time.time()
+                            trajectories = self.env_manager.rollout(tasks, task_exp_configs, mode="sample", epoch=f"train.{epoch}.{i1}")  # ⭐ Generate trajectories using the environment manager
                             assert len(trajectories)>0, "{len(trajectories)=}?"
                             print("=" * 10 + "end fit rollout" + "=" * 10)
                             gen_batch_output = self.env_manager.to_dataproto(trajectories)
+
+                            # 计算并打印 rollout 统计信息
+                            rollout_stats = self._compute_rollout_statistics(
+                                batch=gen_batch_output,
+                                trajectories=trajectories,
+                                epoch=epoch,
+                                batch_idx=i1,
+                                rollout_start_time=rollout_start_time
+                            )
+                            # 将统计信息添加到 metrics 中
+                            metrics.update({
+                                "rollout/prompt_length": rollout_stats["prompt_length"]["fixed"],
+                                "rollout/response_length_mean": rollout_stats["response_length"]["mean"],
+                                "rollout/response_length_median": rollout_stats["response_length"]["median"],
+                                "rollout/response_length_p95": rollout_stats["response_length"]["p95"],
+                                "rollout/response_length_p99": rollout_stats["response_length"]["p99"],
+                                "rollout/context_length_mean": rollout_stats["context_length"]["mean"],
+                                "rollout/context_length_median": rollout_stats["context_length"]["median"],
+                                "rollout/context_length_p95": rollout_stats["context_length"]["p95"],
+                                "rollout/context_length_p99": rollout_stats["context_length"]["p99"],
+                                "rollout/max_parallel_workers": rollout_stats["rollout_concurrency"]["max_parallel_workers"],
+                                "rollout/total_tasks": rollout_stats["rollout_concurrency"]["total_tasks"],
+                            })
+                            if rollout_start_time is not None:
+                                metrics.update({
+                                    "rollout/duration_seconds": rollout_stats["rollout_concurrency"]["duration_seconds"],
+                                    "rollout/tasks_per_second": rollout_stats["rollout_concurrency"]["tasks_per_second"],
+                                    "rollout/effective_concurrency": rollout_stats["rollout_concurrency"]["effective_concurrency"],
+                                })
                             
                             # update metrics about experience manager
                             exp_mask_ratio = gen_batch_output.batch["exp_mask"].float().mean()
@@ -1297,6 +1739,10 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                         # ==================== Begin ADCA GRPO  ====================
                         attribution_cfg = self._get_attribution_config()
                         if getattr(attribution_cfg, 'enable', False):
+                            # Attach artifact_recorder to batch for ADCA recording
+                            if hasattr(self, 'artifact_recorder') and self.artifact_recorder:
+                                batch.artifact_recorder = self.artifact_recorder
+                            
                             batch, adca_metrics = apply_adca_grpo(
                                 batch=batch,
                                 attribution_cfg=attribution_cfg,

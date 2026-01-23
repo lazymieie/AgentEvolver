@@ -3,6 +3,9 @@ import uuid
 import json
 import re
 import torch
+import os
+import base64
+import io as pyio
 from typing import List, Union
 from agentevolver.schema.trajectory import Sample, Reward
 from agentevolver.schema.trajectory import Sample, Trajectory
@@ -30,7 +33,7 @@ class Linear_CMT(Trajectory, ContextManagerBase):
         terminal_rewards_dict (dict): Dictionary storing terminal rewards
     """
 
-    def __init__(self, config, tokenizer):
+    def __init__(self, config, tokenizer, processor=None):
         """
         Initializes the Linear_CMT class with the provided configuration and tokenizer.
 

@@ -160,36 +160,108 @@ Please identify the specific tasks the agent is attempting to complete in these 
 
     return AGENT_SUMMARIZE_SYSTEM_PROMPT, user_prompt
 
+#gjx
+# def parse_tasks_from_response(task: Task, response: str) -> list[TaskObjective]:
+#     task = task.copy()
 
+#     tasks: list[TaskObjective] = []
+#     try:
+#         import re
+
+#         task_matches = re.findall(r"<task>(.*?)</task>", response, re.DOTALL)
+
+#         for task_content in task_matches:
+#             t = json.loads(task_content)
+
+#             if (
+#                 "query" not in t
+#                 or "confidence" not in t
+#                 or "action_sequence" not in t
+#             ):
+#                 continue
+#             task.query = t["query"]
+#             task.open_query = True
+#             x=TaskObjective(
+#                 task=task,
+#                 confidence=t["confidence"],
+#                 reward=None,
+#             )
+#             x.ground_truth=t["action_sequence"]
+#             tasks.append(x)
+
+#     except Exception as e:
+#         print(f"Error parsing tasks: {e}")
+
+#     return tasks
 def parse_tasks_from_response(task: Task, response: str) -> list[TaskObjective]:
+    import json, re
     task = task.copy()
-
     tasks: list[TaskObjective] = []
-    try:
-        import re
 
-        task_matches = re.findall(r"<task>(.*?)</task>", response, re.DOTALL)
+    task_matches = re.findall(r"<task>(.*?)</task>", response, re.DOTALL)
 
-        for task_content in task_matches:
-            t = json.loads(task_content)
+    for task_content in task_matches:
+        raw = task_content.strip()
 
-            if (
-                "query" not in t
-                or "confidence" not in t
-                or "action_sequence" not in t
-            ):
+        def _try_load(s: str):
+            return json.loads(s)
+
+        try:
+            t = _try_load(raw)
+        except Exception:
+            # ---- 修复 action_sequence 里的裸换行，转成 \n ----
+            # 匹配 "action_sequence": " .... "
+            m = re.search(r'"action_sequence"\s*:\s*"', raw)
+            if not m:
                 continue
-            task.query = t["query"]
-            task.open_query = True
-            x=TaskObjective(
-                task=task,
-                confidence=t["confidence"],
-                reward=None,
-            )
-            x.ground_truth=t["action_sequence"]
-            tasks.append(x)
 
-    except Exception as e:
-        print(f"Error parsing tasks: {e}")
+            start = m.end()  # 指向 action_sequence 的内容起点（引号后）
+            # 从 start 往后找下一个未转义的双引号作为结尾
+            i = start
+            escaped = False
+            end = None
+            while i < len(raw):
+                ch = raw[i]
+                if escaped:
+                    escaped = False
+                else:
+                    if ch == '\\':
+                        escaped = True
+                    elif ch == '"':
+                        end = i
+                        break
+                i += 1
+            if end is None:
+                continue
+
+            action = raw[start:end]
+            # 把真实换行、回车、制表等变成合法转义
+            action_fixed = (
+                action
+                .replace("\\", "\\\\")   # 先转义反斜杠，避免破坏原结构
+                .replace("\r", "\\r")
+                .replace("\n", "\\n")
+                .replace("\t", "\\t")
+            )
+
+            raw_fixed = raw[:start] + action_fixed + raw[end:]
+            try:
+                t = _try_load(raw_fixed)
+            except Exception as e2:
+                print(f"Error parsing tasks after fix: {e2}")
+                continue
+
+        # ---- 校验字段 ----
+        if ("query" not in t) or ("confidence" not in t) or ("action_sequence" not in t):
+            continue
+
+        new_task = task.copy()
+        new_task.query = t["query"]
+        new_task.open_query = True
+        new_task.evaluator = "synthetic"
+
+        obj = TaskObjective(task=new_task, confidence=float(t["confidence"]), reward=None)
+        obj.ground_truth = t["action_sequence"]
+        tasks.append(obj)
 
     return tasks

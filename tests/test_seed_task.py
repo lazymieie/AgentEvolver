@@ -1,3 +1,17 @@
+"""
+Inspect what "seed tasks" fetched from EnvService look like.
+
+Usage (PowerShell):
+  python scripts/inspect_seed_tasks.py --env_url http://127.0.0.1:8080 --env_type appworld --split train --k 5
+
+What you'll see:
+  1) Raw task_id list returned by EnvService (/get_env_profile)
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
 # env_client.py
 from typing import Dict, List, Any
 
@@ -201,7 +215,7 @@ def main():
     print(f"Created instance {instance_id} with query: {query}")
 
     # act
-    action = {"role": "assistant", "content": "print('hello bfcl!!')"}
+    action = {"role": "assistant", "content": "print('hello appworld!!')"}
     result = client.step(instance_id, action)  # ⭐ Execute an action within the created instance
     print(f"Step result: {result}")
 
@@ -214,5 +228,94 @@ def main():
     print(f"Instance released: {success}")
 
 
+
+
+
+
+import argparse
+import json
+
+
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser()
+    p.add_argument("--env_url", type=str, required=True, help="EnvService base url, e.g. http://127.0.0.1:8080")
+    p.add_argument("--env_type", type=str, required=True, help="Environment type, e.g. appworld/bfcl/openworld")
+    p.add_argument("--split", type=str, default="train", help="Split name passed to EnvService, e.g. train/val/dev/test_normal")
+    p.add_argument(
+        "--k",
+        type=int,
+        default=5,
+        help="How many tasks to inspect. Use --k -1 to inspect all tasks in the split (may be slow).",
+    )
+    p.add_argument(
+        "--out",
+        type=str,
+        default="seed_tasks.details.jsonl",
+        help="Output jsonl path (one line per task detail).",
+    )
+    return p.parse_args()
+
+
+def main() -> None:
+    args = _parse_args()
+
+    # Raw ids from EnvService
+
+    env = EnvClient(args.env_url)
+    task_ids = env.get_env_profile(env_type=args.env_type, split=args.split)
+    if args.k == -1:
+        selected_ids = task_ids
+    else:
+        selected_ids = task_ids[: max(0, args.k)]
+
+    print(f"/get_env_profile returned {len(task_ids)} task_ids; inspecting {len(selected_ids)} of them.")
+    print("first few task_ids:")
+    print(json.dumps(selected_ids[: min(5, len(selected_ids))], ensure_ascii=False, indent=2))
+
+    # Fetch "details" by creating an instance for each task_id.
+    # Most envs return the initial conversation in `state`, which includes the user query / system messages.
+    written = 0
+    with open(args.out, "w", encoding="utf-8") as f:
+        for idx, task_id in enumerate(selected_ids):
+            instance_id = None
+            try:
+                init = env.create_instance(env_type=args.env_type, task_id=str(task_id), instance_id=None, params={})
+                # common: init["info"]["instance_id"], init["state"] (list[message])
+                info = init.get("info", {}) if isinstance(init, dict) else {}
+                instance_id = info.get("instance_id")
+
+                record = {
+                    "env_type": args.env_type,
+                    "split": args.split,
+                    "task_id": str(task_id),
+                    "init": init,  # raw init payload from env service
+                }
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                written += 1
+
+                # Print a compact, human-readable preview to stdout
+                state = init.get("state") if isinstance(init, dict) else None
+                if isinstance(state, list) and state:
+                    last_msg = state[-1]
+                    last_content = last_msg.get("content") if isinstance(last_msg, dict) else None
+                    print(f"[{idx}] task_id={task_id} last_message.role={getattr(last_msg, 'get', lambda _ : None)('role')} len(content)={len(last_content) if isinstance(last_content,str) else 'NA'}")
+                else:
+                    print(f"[{idx}] task_id={task_id} (no state in init response)")
+
+            finally:
+                # Always release to avoid leaking env instances
+                if instance_id:
+                    try:
+                        env.release_instance(instance_id)
+                    except Exception:
+                        pass
+
+    print(f"\nWrote {written} task details to: {args.out}")
+
+
 if __name__ == "__main__":
     main()
+
+
+
+

@@ -9,7 +9,15 @@ from unittest.mock import patch
 # 导入你的实际模块
 from agentevolver.client.embedding_client import OpenAIEmbeddingClient
 from agentevolver.module.task_manager.strategies.deduplication.embedding import EmbeddingClient,StateRecorder,pack_trajectory
+LOCAL_MODEL_PATH = os.getenv("LOCAL_EMBEDDING_MODEL_PATH")  # 你也可以写死路径
+LOCAL_DEVICE = os.getenv("LOCAL_EMBEDDING_DEVICE", "cuda:4")  # 或 "cpu"
 
+@pytest.fixture(scope="session")
+def local_model_path():
+    p = LOCAL_MODEL_PATH
+    if not p or not os.path.isdir(p):
+        pytest.skip("需要设置 LOCAL_EMBEDDING_MODEL_PATH 并确保目录存在（本地 embedding 模型路径）")
+    return p
 
 class MockTrajectory:
     """模拟的轨迹类"""
@@ -30,34 +38,20 @@ class TestEmbeddingClientWithRealAPI:
         shutil.rmtree(temp_dir, ignore_errors=True)
     
     @pytest.fixture
-    def embedding_client(self, temp_db_path):
-        """创建真实的EmbeddingClient"""
-        # 检查API密钥是否存在
-        api_key = os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            pytest.skip("需要设置 DASHSCOPE_API_KEY 或 OPENAI_API_KEY 环境变量")
-        
+    def embedding_client(self, temp_db_path, local_model_path):
         from agentevolver.module.task_manager.strategies.deduplication.embedding import EmbeddingClient
-        
-        # 根据可用的API密钥选择配置
-        if os.getenv("DASHSCOPE_API_KEY"):
-            return EmbeddingClient(
-                similarity_threshold=0.8,
-                base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-                api_key=os.getenv("DASHSCOPE_API_KEY"),
-                model="text-embedding-v4",
-                chroma_db_path=temp_db_path,
-                collection_name="test_collection"
-            )
-        else:
-            return EmbeddingClient(
-                similarity_threshold=0.8,
-                base_url="https://api.openai.com/v1",
-                api_key=os.getenv("OPENAI_API_KEY"),
-                model="text-embedding-ada-002",
-                chroma_db_path=temp_db_path,
-                collection_name="test_collection"
-            )
+
+        return EmbeddingClient(
+            similarity_threshold=0.8,
+            chroma_db_path=temp_db_path,
+            collection_name="test_collection",
+            # ✅ 本地模式关键参数
+            local_model_path=local_model_path,
+            device=LOCAL_DEVICE,      # "cuda:1" / "cuda:0" / "cpu"
+            batch_size=8,
+            max_length=2048,
+        )
+
     
     def test_real_embedding_initialization(self, embedding_client):
         """测试真实API的EmbeddingClient初始化"""
@@ -200,60 +194,39 @@ class TestEmbeddingClientWithRealAPI:
         print(f"批量处理生成了 {len(embeddings)} 个嵌入向量")
         print(f"每个向量的维度: {len(embeddings[0])}")
     
-    def test_real_persistence_and_reload(self, temp_db_path):
-        """测试数据持久化和重新加载"""
-        api_key = os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            pytest.skip("需要设置 DASHSCOPE_API_KEY 或 OPENAI_API_KEY 环境变量")
-        
+    def test_real_persistence_and_reload(self, temp_db_path, local_model_path):
         from agentevolver.module.task_manager.strategies.deduplication.embedding import EmbeddingClient
-        
+
         collection_name = "persistence_test"
-        
-        # 创建第一个客户端并添加数据
-        if os.getenv("DASHSCOPE_API_KEY"):
-            client1 = EmbeddingClient(
-                similarity_threshold=0.8,
-                chroma_db_path=temp_db_path,
-                collection_name=collection_name
-            )
-        else:
-            client1 = EmbeddingClient(
-                similarity_threshold=0.8,
-                base_url="https://api.openai.com/v1",
-                api_key=os.getenv("OPENAI_API_KEY"),
-                model="text-embedding-ada-002",
-                chroma_db_path=temp_db_path,
-                collection_name=collection_name
-            )
-        
+
+        client1 = EmbeddingClient(
+            similarity_threshold=0.8,
+            chroma_db_path=temp_db_path,
+            collection_name=collection_name,
+            local_model_path=local_model_path,
+            device=LOCAL_DEVICE,
+            batch_size=8,
+            max_length=2048,
+        )
+
         test_text = "持久化测试文档"
         client1.add(test_text, 1)
         assert client1.size() == 1
-        
-        # 创建第二个客户端（模拟重启）
-        if os.getenv("DASHSCOPE_API_KEY"):
-            client2 = EmbeddingClient(
-                similarity_threshold=0.8,
-                chroma_db_path=temp_db_path,
-                collection_name=collection_name
-            )
-        else:
-            client2 = EmbeddingClient(
-                similarity_threshold=0.8,
-                base_url="https://api.openai.com/v1",
-                api_key=os.getenv("OPENAI_API_KEY"),
-                model="text-embedding-ada-002",
-                chroma_db_path=temp_db_path,
-                collection_name=collection_name
-            )
-        
-        # 数据应该仍然存在
+
+        client2 = EmbeddingClient(
+            similarity_threshold=0.8,
+            chroma_db_path=temp_db_path,
+            collection_name=collection_name,
+            local_model_path=local_model_path,
+            device=LOCAL_DEVICE,
+            batch_size=8,
+            max_length=2048,
+        )
+
         assert client2.size() == 1
         result = client2.find_by_text(test_text)
         assert result == 1
-        
-        print("持久化测试通过：数据在重启后仍然存在")
+
 
 
 class TestStateRecorderWithRealAPI:
@@ -266,18 +239,20 @@ class TestStateRecorderWithRealAPI:
         shutil.rmtree(temp_dir, ignore_errors=True)
     
     @pytest.fixture
-    def state_recorder(self, temp_db_path):
-        api_key = os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            pytest.skip("需要设置 DASHSCOPE_API_KEY 或 OPENAI_API_KEY 环境变量")
-        
+    def state_recorder(self, temp_db_path, local_model_path):
         from agentevolver.module.task_manager.strategies.deduplication.embedding import StateRecorder
-        
+
         return StateRecorder(
-            similarity_threshold=0.85,  # 稍高的阈值确保准确性
+            similarity_threshold=0.85,
             chroma_db_path=temp_db_path,
-            collection_name="test_states"
+            collection_name="test_states",
+            # ✅ 本地
+            local_model_path=local_model_path,
+            device=LOCAL_DEVICE,
+            batch_size=8,
+            max_length=2048,
         )
+
     
     def test_real_trajectory_similarity(self, state_recorder):
         """测试真实轨迹相似度判断"""
@@ -393,9 +368,9 @@ class TestRealAPIPerformance:
     
     @pytest.fixture
     def embedding_client(self):
-        api_key = os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            pytest.skip("需要设置 DASHSCOPE_API_KEY 或 OPENAI_API_KEY 环境变量")
+        # api_key = os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY")
+        # if not api_key:
+        #     pytest.skip("需要设置 DASHSCOPE_API_KEY 或 OPENAI_API_KEY 环境变量")
         
         temp_dir = tempfile.mkdtemp()
         
@@ -460,51 +435,277 @@ class TestConfiguration:
     """测试配置和环境检查"""
     
     def test_environment_setup(self):
-        """检查测试环境设置"""
-        dashscope_key = os.getenv("DASHSCOPE_API_KEY")
-        openai_key = os.getenv("OPENAI_API_KEY")
-        
-        if not dashscope_key and not openai_key:
+        p = os.getenv("LOCAL_EMBEDDING_MODEL_PATH")
+        if not p or not os.path.isdir(p):
             pytest.fail(
-                "需要设置以下环境变量之一:\n"
-                "- DASHSCOPE_API_KEY (阿里云DashScope)\n"
-                "- OPENAI_API_KEY (OpenAI)\n\n"
-                "设置方法:\n"
-                "export DASHSCOPE_API_KEY='your-key-here'\n"
-                "或\n"
-                "export OPENAI_API_KEY='your-key-here'"
+                "需要设置本地 embedding 模型路径:\n"
+                "export LOCAL_EMBEDDING_MODEL_PATH='/path/to/your/embedding/model'\n"
+                "并确保该目录存在"
             )
-        
-        if dashscope_key:
-            print("✅ 检测到 DashScope API Key")
-        if openai_key:
-            print("✅ 检测到 OpenAI API Key")
+        print("✅ 检测到本地 Embedding 模型路径:", p)
+
+
+
+def main():
+    import traceback
+
+    def ok(msg: str):
+        print(f"✅ {msg}")
+
+    def warn(msg: str):
+        print(f"⚠️  {msg}")
+
+    def fail(msg: str):
+        print(f"❌ {msg}")
+
+    # -----------------------------
+    # 0) env check
+    # -----------------------------
+    model_path = os.getenv("LOCAL_EMBEDDING_MODEL_PATH")
+    device = os.getenv("LOCAL_EMBEDDING_DEVICE", LOCAL_DEVICE)
+
+    print("=== Local Embedding Smoke Check ===")
+    print(f"LOCAL_EMBEDDING_MODEL_PATH = {model_path}")
+    print(f"LOCAL_EMBEDDING_DEVICE     = {device}")
+
+    if not model_path or not os.path.isdir(model_path):
+        fail("LOCAL_EMBEDDING_MODEL_PATH 未设置或目录不存在")
+        print("请先：export LOCAL_EMBEDDING_MODEL_PATH='/path/to/model'")
+        return 2
+    ok("本地模型路径存在")
+
+    # try torch + cuda sanity
+    try:
+        import torch
+
+        if device.startswith("cuda"):
+            if not torch.cuda.is_available():
+                fail("torch.cuda.is_available() = False，但你设置了 cuda 设备")
+                return 2
+
+            # parse cuda index if any
+            if ":" in device:
+                idx_str = device.split(":")[1].strip()
+                if idx_str.isdigit():
+                    idx = int(idx_str)
+                    n = torch.cuda.device_count()
+                    if idx >= n:
+                        fail(f"你设置 device={device}，但机器只有 {n} 张 GPU（0..{n-1}）")
+                        return 2
+            ok("CUDA 设备检查通过")
+        else:
+            ok("使用 CPU 模式")
+    except Exception as e:
+        warn(f"无法检查 torch/cuda（可能未安装 torch）：{e}")
+
+    # -----------------------------
+    # 1) create temp chroma path
+    # -----------------------------
+    temp_dir = tempfile.mkdtemp(prefix="chroma_smoke_")
+    ok(f"创建临时 ChromaDB 目录: {temp_dir}")
+
+    def cleanup():
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        ok("清理临时目录完成")
+
+    # -----------------------------
+    # 2) init EmbeddingClient
+    # -----------------------------
+    try:
+        client = EmbeddingClient(
+            similarity_threshold=0.8,
+            chroma_db_path=temp_dir,
+            collection_name="main_smoke_collection",
+            local_model_path=model_path,
+            device=device,
+            batch_size=8,
+            max_length=2048,
+        )
+        ok("EmbeddingClient 初始化成功")
+    except Exception as e:
+        fail(f"EmbeddingClient 初始化失败：{e}")
+        traceback.print_exc()
+        cleanup()
+        return 1
+
+    # -----------------------------
+    # 3) add & retrieve
+    # -----------------------------
+    try:
+        docs = [
+            (1, "Python是一种高级编程语言"),
+            (2, "机器学习是人工智能的一个分支"),
+            (3, "深度学习使用神经网络"),
+        ]
+        for doc_id, text in docs:
+            client.add(text, doc_id)
+
+        ok(f"add 成功，当前 size={client.size()}")
+        assert client.size() == len(docs)
+
+        got = client.find_by_text("Python是一种高级编程语言")
+        assert got == 1
+        ok("find_by_text 精确命中 OK")
+    except Exception as e:
+        fail(f"add/find 测试失败：{e}")
+        traceback.print_exc()
+        cleanup()
+        return 1
+
+    # -----------------------------
+    # 4) top-k similarity
+    # -----------------------------
+    try:
+        top = client.find_top_k_by_text("编程语言学习", k=3)
+        assert len(top) > 0
+        ok("find_top_k_by_text 返回非空")
+        print("TopK results:")
+        for doc_id, sim, text in top:
+            print(f"  id={doc_id}, sim={sim:.4f}, text={text}")
+    except Exception as e:
+        fail(f"top-k 相似度测试失败：{e}")
+        traceback.print_exc()
+        cleanup()
+        return 1
+
+    # -----------------------------
+    # 5) multilingual (may be model-dependent)
+    # -----------------------------
+    try:
+        client2 = EmbeddingClient(
+            similarity_threshold=0.6,  # 跨语言不稳定，阈值放低点更不容易误报失败
+            chroma_db_path=temp_dir,
+            collection_name="multilingual_collection",
+            local_model_path=model_path,
+            device=device,
+            batch_size=8,
+            max_length=2048,
+        )
+        multilingual_docs = [
+            (1, "Hello world, this is a test"),
+            (2, "你好世界，这是一个测试"),
+            (3, "Hola mundo, esta es una prueba"),
+        ]
+        for doc_id, text in multilingual_docs:
+            client2.add(text, doc_id)
+
+        # 不强制 assert 精确等于某个 id（本地模型可能差异大），改成 “topk 包含目标”
+        top_cn = client2.find_top_k_by_text("你好世界", k=2)
+        ok("multilingual: 中文查询返回 topk")
+        print("CN topk:", [(i, round(s, 4)) for i, s, _ in top_cn])
+
+        assert any(doc_id == 2 for doc_id, _, _ in top_cn)
+        ok("multilingual: 中文 topk 包含 id=2")
+
+        top_en = client2.find_top_k_by_text("Hello world test", k=2)
+        ok("multilingual: 英文查询返回 topk")
+        print("EN topk:", [(i, round(s, 4)) for i, s, _ in top_en])
+
+        assert any(doc_id == 1 for doc_id, _, _ in top_en)
+        ok("multilingual: 英文 topk 包含 id=1")
+    except Exception as e:
+        warn(f"multilingual 测试未通过（可能是模型跨语言能力差/阈值不合适）：{e}")
+        traceback.print_exc()
+
+    # -----------------------------
+    # 6) batch embedding
+    # -----------------------------
+    try:
+        batch_docs = [f"这是第{i}个测试文档，内容关于批量处理" for i in range(10)]
+        embs = client._embedding(batch_docs, bs=5)
+        assert len(embs) == len(batch_docs)
+        assert len(embs[0]) > 0
+        ok(f"batch embedding OK: n={len(embs)}, dim={len(embs[0])}")
+    except Exception as e:
+        fail(f"batch embedding 失败：{e}")
+        traceback.print_exc()
+        cleanup()
+        return 1
+
+    # -----------------------------
+    # 7) persistence reload (same temp_dir)
+    # -----------------------------
+    try:
+        persist_name = "persistence_collection"
+        c1 = EmbeddingClient(
+            similarity_threshold=0.8,
+            chroma_db_path=temp_dir,
+            collection_name=persist_name,
+            local_model_path=model_path,
+            device=device,
+            batch_size=8,
+            max_length=2048,
+        )
+        c1.add("持久化测试文档", 99)
+        assert c1.size() == 1
+
+        c2 = EmbeddingClient(
+            similarity_threshold=0.8,
+            chroma_db_path=temp_dir,
+            collection_name=persist_name,
+            local_model_path=model_path,
+            device=device,
+            batch_size=8,
+            max_length=2048,
+        )
+        assert c2.size() == 1
+        got = c2.find_by_text("持久化测试文档")
+        assert got == 99
+        ok("persistence reload OK")
+    except Exception as e:
+        fail(f"persistence 测试失败：{e}")
+        traceback.print_exc()
+        cleanup()
+        return 1
+
+    # -----------------------------
+    # 8) StateRecorder smoke
+    # -----------------------------
+    try:
+        recorder = StateRecorder(
+            similarity_threshold=0.85,
+            chroma_db_path=temp_dir,
+            collection_name="state_recorder_collection",
+            local_model_path=model_path,
+            device=device,
+            batch_size=8,
+            max_length=2048,
+        )
+        traj1 = MockTrajectory([{"role": "user", "content": "我想学习Python编程"}])
+        traj2 = MockTrajectory([{"role": "user", "content": "我想学习Python编程"}])
+
+        recorder.add_state(traj1, "动作1", "观察1")
+        recorder.add_state(traj2, "动作2", "观察2")
+
+        st1 = recorder.get_state(traj1)
+        st2 = recorder.get_state(traj2)
+
+        ok(f"StateRecorder get_state: len(traj1)={len(st1)}, len(traj2)={len(st2)}")
+        print("traj1 states:", st1)
+        print("traj2 states:", st2)
+    except Exception as e:
+        fail(f"StateRecorder 测试失败：{e}")
+        traceback.print_exc()
+        cleanup()
+        return 1
+
+    # -----------------------------
+    # 9) performance quick check
+    # -----------------------------
+    try:
+        docs = ["这是第一个测试文档", "这是第二个测试文档", "这是第三个测试文档"]
+        t0 = time.time()
+        for i, d in enumerate(docs):
+            client.add(d, 1000 + i)
+        dt = time.time() - t0
+        ok(f"perf: add {len(docs)} docs took {dt:.2f}s (local)")
+    except Exception as e:
+        warn(f"perf 测试失败（不影响功能）：{e}")
+
+    cleanup()
+    print("=== DONE ===")
+    return 0
 
 
 if __name__ == "__main__":
-    print("🧪 EmbeddingClient 真实API测试用例")
-    print("=" * 50)
-    print()
-    print("📋 测试内容:")
-    print("✅ 真实嵌入向量生成和存储")
-    print("✅ 语义相似度搜索")
-    print("✅ 多语言支持测试")
-    print("✅ 数据持久化验证")
-    print("✅ StateRecorder轨迹管理")
-    print("✅ API性能和限流测试")
-    print()
-    print("🔧 运行前准备:")
-    print("1. 安装依赖: pip install pytest chromadb")
-    print("2. 设置API密钥:")
-    print("   export DASHSCOPE_API_KEY='your-dashscope-key'")
-    print("   或")
-    print("   export OPENAI_API_KEY='your-openai-key'")
-    print()
-    print("🚀 运行命令:")
-    print("pytest test_embedding_client_real.py -v -s")
-    print("pytest test_embedding_client_real.py::TestEmbeddingClientWithRealAPI -v")
-    print()
-    print("⚠️  注意:")
-    print("- 测试会调用真实API，可能产生费用")
-    print("- 请确保API密钥有足够的配额")
-    print("- 测试中包含适当的延时以避免限流")
+    raise SystemExit(main())

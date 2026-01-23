@@ -100,7 +100,8 @@ def bfcl_task_preprocess(
     total_cases = sum(len(cases) for cases in all_test_cases_by_category.values())
     print(f"Loaded {total_cases} test cases in total across {len(all_test_cases_by_category)} categories")
     
-    model_handler = QwenFCHandler(model_name="qwen-fc-72b-instruct", temperature=0.0)
+    model_handler = QwenFCHandler(registry_name="qwen", is_fc_model=True, model_name="qwen-fc-72b-instruct", temperature=0.0)
+
     
     # Process test cases by category
     all_processed_cases = []

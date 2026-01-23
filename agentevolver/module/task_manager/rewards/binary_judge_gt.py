@@ -139,13 +139,13 @@ class LlmAsJudgeBinaryRewardCalculatorWithGT(RewardCalculator):
     _alpha_slow=0.95
     _update_lock = threading.Lock()
 
-    def __init__(self, task: Task, model_name='qwen3-235b-a22b-instruct-2507', use_mean_constraint=True):
+    def __init__(self, task: Task, model_name='gpt-4o-2', use_mean_constraint=True):
         super().__init__(task)
 
         self._client = DashScopeClient(model_name=model_name)
-        self._client.max_tokens=32768
+        self._client.max_tokens=4096
         self._use_mean_constraint = use_mean_constraint
-
+#gjx
     @classmethod
     def update_running_mean(cls, new_score: float):
         with cls._update_lock:
@@ -244,5 +244,5 @@ class LlmAsJudgeBinaryRewardCalculatorWithGT(RewardCalculator):
 
 @grader_manager.reg("llm-binary-gt-no_constraint")
 class LlmAsJudgeBinaryRewardCalculatorWithGTNoConstraint(LlmAsJudgeBinaryRewardCalculatorWithGT):
-    def __init__(self, task: Task, model_name='qwen3-235b-a22b-instruct-2507'):
+    def __init__(self, task: Task, model_name='gpt-4o-2'):
         super().__init__(task, model_name, use_mean_constraint=False)

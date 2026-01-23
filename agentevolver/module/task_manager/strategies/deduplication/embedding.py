@@ -11,27 +11,54 @@ from agentevolver.schema.trajectory import Trajectory
 MAX_INPUT_LEN=8192
 
 class EmbeddingClient:
-    def __init__(self, similarity_threshold: float, base_url: str = 'https://dashscope.aliyuncs.com/compatible-mode/v1', 
-                 api_key: Optional[str] = None, model: str = "text-embedding-v4",
-                 chroma_db_path: str = "./chroma_db", collection_name: str = "trajectories"):
+    def __init__(
+        self,
+        similarity_threshold: float,
+        base_url: str = 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        api_key: Optional[str] = None,
+        model: str = "text-embedding-v4",
+        chroma_db_path: str = "./chroma_db",
+        collection_name: str = "trajectories",
+        # ✅ 新增：本地 embedding
+        local_model_path: Optional[str] = None,
+        device: Optional[str] = None,
+        batch_size: int = 16,
+        max_length: int = 2048,
+        # （可选）远程限流参数
+        rate_limit_calls: int = 60,
+        rate_limit_window: int = 60,
+    ):
         api_key = api_key or os.getenv("DASHSCOPE_API_KEY")
-        assert api_key is not None, "DASHSCOPE_API_KEY is required"
-        
-        self._client = OpenAIEmbeddingClient(api_key=api_key, base_url=base_url, model_name=model)
+
+        self._client = OpenAIEmbeddingClient(
+            api_key=api_key,
+            base_url=base_url,
+            model_name=model,
+            # ✅ 透传本地参数
+            local_model_path=local_model_path,
+            device=device,
+            batch_size=batch_size,
+            max_length=max_length,
+            # ✅ 透传限流参数（本地模式内部会自动不走）
+            rate_limit_calls=rate_limit_calls,
+            rate_limit_window=rate_limit_window,
+        )
+
         self.similarity_threshold = similarity_threshold
-        
+
         self._chroma_client = chromadb.PersistentClient(
             path=chroma_db_path,
             settings=Settings(anonymized_telemetry=False)
         )
-        
+
         self._collection = self._chroma_client.get_or_create_collection(
             name=collection_name,
             metadata={"hnsw:space": "cosine"}
         )
-        
+
         self._id_mapping: dict[int, str] = {}
         self._reverse_id_mapping: dict[str, int] = {}
+
     
     def add(self, text: str, id: int):
         """
@@ -50,63 +77,59 @@ class EmbeddingClient:
             ids=[chroma_id],
             metadatas=[{"original_id": id, "text_length": len(text)}]
         )
-    
     def find_by_text(self, text: str) -> Optional[int]:
-        """
-        Find a similar text in ChromaDB, return the corresponding ID
-        """
         if self._collection.count() == 0:
             return None
-        
+
         query_embedding = self._client.get_single_embedding(text)
-        
+
         results = self._collection.query(
             query_embeddings=[query_embedding],
-            n_results=1,  # only the top result
-            include=["documents", "metadatas", "distances"]
+            n_results=1,
+            include=["documents", "metadatas", "distances"],  # ✅ metadatas 必须 include
         )
-        
+
         if not results["ids"] or not results["ids"][0]:
             return None
-        
-        distance = results["distances"][0][0] # type: ignore
+
+        distance = results["distances"][0][0]
         similarity = 1 - distance
-        
-        if similarity >= self.similarity_threshold:
-            chroma_id = results["ids"][0][0]
-            return self._reverse_id_mapping.get(chroma_id)
-        else:
+        if similarity < self.similarity_threshold:
             return None
+
+        md = results["metadatas"][0][0]  # type: ignore
+        if isinstance(md, dict) and "original_id" in md:
+            return int(md["original_id"])
+        return None
+
     
     def find_top_k_by_text(self, text: str, k: int = 5) -> list[tuple[int, float, str]]:
-        """
-        Find the top k similar documents
-        """
         if self._collection.count() == 0:
             return []
-        
+
         query_embedding = self._client.get_single_embedding(text)
-        
+
         results = self._collection.query(
             query_embeddings=[query_embedding],
             n_results=min(k, self._collection.count()),
-            include=["documents", "metadatas", "distances"]
+            include=["documents", "metadatas", "distances"],  # ✅
         )
-        
+
         if not results["ids"] or not results["ids"][0]:
             return []
-        
-        result_list = []
-        for i, chroma_id in enumerate(results["ids"][0]):
-            distance = results["distances"][0][i] # type: ignore
+
+        result_list: list[tuple[int, float, str]] = []
+        for i in range(len(results["ids"][0])):
+            distance = results["distances"][0][i]  # type: ignore
             similarity = 1 - distance
-            document = results["documents"][0][i] # type: ignore
-            original_id = self._reverse_id_mapping.get(chroma_id)
-            
-            if original_id is not None:
-                result_list.append((original_id, similarity, document))
-        
+            document = results["documents"][0][i]  # type: ignore
+            md = results["metadatas"][0][i]        # type: ignore
+
+            if isinstance(md, dict) and "original_id" in md:
+                result_list.append((int(md["original_id"]), float(similarity), str(document)))
+
         return result_list
+
     
     def _embedding(self, texts: Sequence[str], bs=10) -> list[list[float]]:
         """
@@ -196,15 +219,30 @@ def pack_trajectory(trajectory: Trajectory) -> str:
 
 
 class StateRecorder:
-    def __init__(self, similarity_threshold: float, chroma_db_path: str = "./chroma_db", collection_name: str = "trajectories"):
+    def __init__(
+        self,
+        similarity_threshold: float,
+        chroma_db_path: str = "./chroma_db",
+        collection_name: str = "trajectories",
+        # ✅ 新增：本地 + GPU
+        local_model_path: Optional[str] = None,
+        device: Optional[str] = None,
+        batch_size: int = 16,
+        max_length: int = 2048,
+    ):
         self._client = EmbeddingClient(
             similarity_threshold=similarity_threshold,
             chroma_db_path=chroma_db_path,
-            collection_name=collection_name
+            collection_name=collection_name,
+            local_model_path=local_model_path,
+            device=device,
+            batch_size=batch_size,
+            max_length=max_length,
         )
-        
+
         self._mp: dict[int, list[tuple[str, str]]] = {}
         self._idx = 0
+
     
     def add_state(self, trajectory: Trajectory, action: str, observation: str):
         """
@@ -272,17 +310,20 @@ class StateRecorder:
         self._idx = 0
 
 
-# demo
 if __name__ == "__main__":
-    # install chromadb first: pip install chromadb
-    
-    # init StateRecorder
+    LOCAL_PATH = "/vepfs-cnbj3fa964354bf4/gjx/AgentEvolver/model/Qwen/Qwen3-Embedding-0___6B"
+
     recorder = StateRecorder(
         similarity_threshold=0.8,
         chroma_db_path="./my_chroma_db",
-        collection_name="trajectory_states"
+        collection_name="trajectory_states",
+        local_model_path=LOCAL_PATH,
+        device="cuda:4",     # ✅ 指定某张卡，比如 GPU1
+        batch_size=8,
+        max_length=2048,
     )
-    
+
     print("inited ChromaDB")
+
     
     

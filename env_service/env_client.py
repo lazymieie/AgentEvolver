@@ -47,7 +47,7 @@ def retry_call(
     return fail_return
 
 class EnvClient:
-    def __init__(self, base_url: str = "http://localhost:8000"):
+    def __init__(self, base_url: str = "http://localhost:8080"):
         self.base_url = base_url.rstrip("/")
         self.timeout = 150.0+random.uniform(50, 200)
 

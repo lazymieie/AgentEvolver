@@ -98,7 +98,8 @@ trainer:
   experiment_name: "appworld_qwen25-7b_baseline"
   save_freq: 10000
   test_freq: 10
-  total_epochs: 40
+  total_epochs: 1
+  #跳过
   val_before_train: true
   validation_data_dir: "experiments/tech_synthetic/${trainer.experiment_name}/validation_log"
   rollout_data_dir: "experiments/tech_synthetic/${trainer.experiment_name}/rollout_log"
@@ -112,14 +113,14 @@ trainer:
 
 thread_pool:
   # max number of threads
-  max_workers: 8
+  max_workers: 4
 
 task_manager:
   # tasks will be explored once if set. use it if you want to keep the same explorations.
   train_data_path: tasks_explored.train.json
   val_data_path: tasks_explored.val.json
   # model used to explore the environment
-  llm_client: qwen-plus
+  llm_client: gpt-4o-2
 
   # repetition of exploration
   # 0 - stop exploration
@@ -239,3 +240,23 @@ attribution_driven_credit_assignment:
     skip_type: "none"
     # recommended to be true to monitor the attribution module's internal state
     enable_adca_metric: false
+
+# Debug artifacts recording (for paper reproduction)
+debug_artifacts:
+  # Enable artifact recording (default: false)
+  enable: false
+  # Output directory for artifacts
+  out_dir: ${trainer.rollout_data_dir}/artifacts
+  # Dump every N global steps (1 = every step)
+  dump_every_n_global_steps: 1
+  # Maximum examples to record per global step
+  max_examples_per_step: 3
+  # Maximum characters for string fields (truncate if longer)
+  max_str_chars: 20000
+  # Flags to control what to dump
+  dump_prompts: true
+  dump_steps: true
+  dump_experiences: true
+  dump_adca: true
+  dump_filters: true
+  dump_rewards: true

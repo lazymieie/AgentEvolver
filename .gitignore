@@ -143,3 +143,27 @@ synthetic_data/*
 
 site
 launcher_record
+
+
+env_service/environments/
+model/
+third_party/
+.env*
+*.bak
+# secrets
+.env*
+*.bak
+
+# logs / runs
+tensorboard_log/
+**/events.out.tfevents.*
+tests/events.out.tfevents.*
+
+# local db / cache
+my_chroma_db/
+local_vector_store/
+*.sqlite3
+
+# checkpoints / temp
+*.checkpoint.json
+*.checkpoint.json.*

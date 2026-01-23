@@ -97,8 +97,8 @@ class TaskManager(object):
         self._post_filter: list[TaskPostFilter] = [LlmFilter(env_service_url,llm_client,self._num_exploration_threads,tokenizer=tokenizer,config=config)]  # ⭐ Initialize the post filter
 
         self._tasks: list[Task]=[]
-        self._exploration_strategy._inject_deps(self._old_retrival,self._llm_client,DashScopeClient(model_name='qwen3-235b-a22b-instruct-2507',max_tokens=8192),env_profile=env_profile)  # ⭐ Inject dependencies into the exploration strategy
-
+        self._exploration_strategy._inject_deps(self._old_retrival,self._llm_client,DashScopeClient(model_name='gpt-4o-2',max_tokens=8192),env_profile=env_profile)  # ⭐ Inject dependencies into the exploration strategy
+#gjx
     @property
     def seed_tasks(self):
         """
@@ -188,7 +188,7 @@ class TaskManager(object):
         combined_str = "|".join(task_strs)
         return hashlib.md5(combined_str.encode()).hexdigest()  # ⭐ Compute the MD5 hash of the combined string
 
-    def generate_task(self, tasks: Sequence[Task], *, show_progress=False, resume_file: Optional[str] = None) -> list[TaskObjective]:
+    def generate_task1(self, tasks: Sequence[Task], *, show_progress=False, resume_file: Optional[str] = None) -> list[TaskObjective]:
         """
         Generates task objectives by exploring and summarizing tasks, with support for resuming from a checkpoint and applying filters.
 
@@ -244,15 +244,28 @@ class TaskManager(object):
                     )
                 ]
                 task_objectives = sum([future.result() for future in futures], [])  # ⭐ Collect results from all futures
+                # logger.warning(f"[GEN DEBUG] batch={idx} newly_generated={len(task_objectives)}")
+                with open("task_objectives_raw.jsonl", "a") as f:
+                    for obj in task_objectives:
+                        f.write(obj.json() + "\n")
+
+                #gjx
                 res.extend(task_objectives)
                 # realtime filter
                 res = functools.reduce(lambda x, f: f.filter(x), self._realtime_filters, res)
+                tmp = res
+                for f in self._realtime_filters:
+                    b=len(tmp); tmp=f.filter(tmp); a=len(tmp)
+                    logger.warning(f"[RT FILTER] {f.__class__.__name__}: {b}->{a}")
+                res = tmp
+
                 self._old_retrival.reset()
                 for j in res:
                     self._old_retrival.add_objective(j)
 
                 # Mark this batch as processed
                 processed_indices.add(idx)
+                
 
                 # Save checkpoint
                 if resume_file:
@@ -269,18 +282,237 @@ class TaskManager(object):
                     except Exception as e:
                         logger.warning(f"Failed to save checkpoint: {e}")
 
+                stop_after_results = 10
+                # print("res长度")
+                # logger.warning(f"[DEBUG] res length = {len(res)}")
 
+                if stop_after_results is not None and len(res) >= stop_after_results:
+                    logger.warning(f"Stop early: reached stop_after_results={stop_after_results}, current={len(res)}")
+                    # 仍然会保存 checkpoint
+                    # break
+                    break
+    def generate_task(
+        self,
+        tasks: Sequence[Task],
+        *,
+        show_progress: bool = False,
+        resume_file: Optional[str] = None,
+        # debug_limit_tasks: int = 10,   # ✅ 只取前10个 task
+        debug_dump_k: int = 2,         # ✅ 每批打印前k条 objective 的摘要
+    ) -> list[TaskObjective]:
+        """
+        Generates task objectives by exploring and summarizing tasks, with support for resuming from a checkpoint and applying filters.
+        """
 
-        res = functools.reduce(lambda x, f: f.filter(x), self._realtime_filters, res)
-        # post filter
+        import os
+        import json
+        import time
+        import copy
+        import functools
+        import random
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from loguru import logger
+        from tqdm import tqdm
+
+        if resume_file is None:
+            resume_file = ".generate_task.checkpoint.json"
+
+        # ✅ 只取前10个 tasks 来生成（你要的）
+        # tasks = list(tasks)[:debug_limit_tasks]
+        # logger.warning(f"[DEBUG] using first {len(tasks)} tasks for generation (debug_limit_tasks={debug_limit_tasks})")
+
+        # ✅ hash 必须基于截断后的 tasks，否则 checkpoint 会错配
+        current_tasks_hash = self._compute_tasks_hash(tasks)
+
+        # Load from checkpoint if resume_file exists
+        res: list[TaskObjective] = []
+        processed_indices: set[int] = set()
+        if resume_file and os.path.exists(resume_file):
+            try:
+                with open(resume_file, "r") as f:
+                    checkpoint = json.load(f)
+                if checkpoint.get("tasks_hash") != current_tasks_hash:
+                    logger.warning(
+                        f"[DEBUG] Tasks hash mismatch. Expected: {current_tasks_hash}, "
+                        f"got: {checkpoint.get('tasks_hash')}. Removing checkpoint."
+                    )
+                    os.remove(resume_file)
+                else:
+                    res = [TaskObjective.parse_raw(json.dumps(obj)) for obj in checkpoint.get("results", [])]
+                    processed_indices = {int(i) for i in checkpoint.get("processed_indices", [])}
+                    logger.info(
+                        f"[DEBUG] Resumed from checkpoint: {len(res)} results loaded, "
+                        f"{len(processed_indices)} batches processed"
+                    )
+            except Exception as e:
+                logger.warning(f"[DEBUG] Failed to load checkpoint: {e}, starting from scratch")
+
+        # we roll n times for each task
+        task_q = list(copy.copy(tasks)) * self._n
+        # logger.warning(f"[DEBUG] task_q size = {len(task_q)} (len(tasks)={len(tasks)} * n={self._n})")
+
+        parallel_num = min(self._num_exploration_threads, len(tasks))
+        batch_indices = list(range(0, len(task_q), parallel_num))
+        # logger.warning(f"[DEBUG] parallel_num={parallel_num}, total_batches={len(batch_indices)}")
+
+        raw_path = os.path.abspath("task_objectives_raw.jsonl")
+        # logger.warning(f"[DEBUG] raw objective dump file = {raw_path}, cwd={os.getcwd()}")
+
+        with ThreadPoolExecutor(max_workers=self._num_exploration_threads) as pool:
+            for batch_id, start_i in enumerate(tqdm(batch_indices, desc="generating tasks", disable=not show_progress)):
+                if batch_id in processed_indices:
+                    logger.warning(f"[DEBUG] skip batch={batch_id} (already processed)")
+                    continue
+
+                # ✅ 本 batch 的 tasks
+                batch_tasks = task_q[start_i : start_i + parallel_num]
+
+                # ✅ 提交 futures，并用 as_completed 抓异常，不让它悄悄变成 []
+                futures = []
+                for t in batch_tasks:
+                    futures.append(pool.submit(self._exlore_and_summarize, t, "unknown", "unknown"))
+
+                task_objectives: list[TaskObjective] = []
+                n_failed = 0
+                for fut in as_completed(futures):
+                    try:
+                        out = fut.result()
+                        if out:
+                            task_objectives.extend(out)
+                    except Exception as e:
+                        n_failed += 1
+                        logger.exception(f"[GEN DEBUG] batch={batch_id} _exlore_and_summarize failed: {e}")
+
+                logger.warning(
+                    f"[GEN DEBUG] batch={batch_id} newly_generated={len(task_objectives)} "
+                    f"(futures={len(futures)}, failed={n_failed})"
+                )
+
+                # ✅ 把本批 raw objective 无论如何都落盘（即使后面会被 filter 杀）
+                if task_objectives:
+                    try:
+                        with open(raw_path, "a") as f:
+                            for obj in task_objectives:
+                                f.write(obj.json() + "\n")
+                    except Exception as e:
+                        logger.exception(f"[GEN DEBUG] failed to write raw jsonl: {e}")
+
+                # ✅ extend 前后长度
+                before_extend = len(res)
+                res.extend(task_objectives)
+                after_extend = len(res)
+                logger.warning(f"[GEN DEBUG] batch={batch_id} res_before_extend={before_extend} res_after_extend={after_extend}")
+
+                # ✅ 逐个 realtime filter 打印 before->after（只过滤一次，避免你原来那种双重过滤）
+                tmp = res
+                for filt in self._realtime_filters:
+                    b = len(tmp)
+                    before_filtered = set(id(obj) for obj in tmp)
+                    tmp = filt.filter(tmp)
+                    a = len(tmp)
+                    after_filtered = set(id(obj) for obj in tmp)
+                    logger.warning(f"[RT FILTER] batch={batch_id} {filt.__class__.__name__}: {b}->{a}")
+                    
+                    # Record filtering results
+                    if hasattr(self, 'artifact_recorder') and self.artifact_recorder and self.artifact_recorder.enable:
+                        for obj in res:
+                            if id(obj) in before_filtered and id(obj) not in after_filtered:
+                                # Filtered out
+                                self.artifact_recorder.write_tasks_filtered(
+                                    task_id=obj.task.task_id,
+                                    passed=False,
+                                    reasons=[f"Filtered by {filt.__class__.__name__}"],
+                                    scores={},
+                                )
+                            elif id(obj) in after_filtered:
+                                # Passed
+                                self.artifact_recorder.write_tasks_filtered(
+                                    task_id=obj.task.task_id,
+                                    passed=True,
+                                    reasons=[f"Passed {filt.__class__.__name__}"],
+                                    scores={},
+                                )
+                res = tmp
+                logger.warning(f"[GEN DEBUG] batch={batch_id} res_after_realtime={len(res)}")
+
+                # ✅ 打印几条样本看看长啥样（避免 schema 缺失被默默杀）
+                for k, obj in enumerate(res[:debug_dump_k]):
+                    try:
+                        logger.warning(f"[GEN DEBUG] batch={batch_id} kept_obj[{k}] = {obj.json()[:800]}")
+                    except Exception:
+                        logger.warning(f"[GEN DEBUG] batch={batch_id} kept_obj[{k}] (json dump failed)")
+
+                # ✅ 更新 retrieval（如果 filter 依赖它，建议你后续考虑把 reset 放到 filter 前）
+                try:
+                    self._old_retrival.reset()
+                    for j in res:
+                        self._old_retrival.add_objective(j)
+                except Exception as e:
+                    logger.exception(f"[GEN DEBUG] retrieval update failed: {e}")
+
+                processed_indices.add(batch_id)
+
+                # ✅ 保存 checkpoint（注意：保存的是过滤后的 res）
+                if resume_file:
+                    try:
+                        checkpoint_data = {
+                            "results": [obj.dict() for obj in res],
+                            "processed_indices": sorted(list(processed_indices)),
+                            "total_batches": len(batch_indices),
+                            "tasks_hash": current_tasks_hash,
+                            "timestamp": time.time(),
+                        }
+                        with open(resume_file, "w") as f:
+                            json.dump(checkpoint_data, f, indent=2)
+                        logger.warning(f"[DEBUG] checkpoint saved: res={len(res)}, processed={len(processed_indices)}")
+                    except Exception as e:
+                        logger.warning(f"[DEBUG] Failed to save checkpoint: {e}")
+
+                # stop_after_results = 10
+                # logger.warning(f"[DEBUG] res length = {len(res)} (stop_after_results={stop_after_results})")
+                # if stop_after_results is not None and len(res) >= stop_after_results:
+                #     logger.warning(
+                #         f"[DEBUG] Stop early: reached stop_after_results={stop_after_results}, current={len(res)}"
+                #     )
+                #     break
+
+        # ✅ 最后再跑一次 realtime_filters（保留你原逻辑，但也打日志）
+        tmp = res
+        for filt in self._realtime_filters:
+            b = len(tmp)
+            tmp = filt.filter(tmp)
+            a = len(tmp)
+            logger.warning(f"[RT FILTER FINAL] {filt.__class__.__name__}: {b}->{a}")
+        res = tmp
+
+        # ✅ post filter 逐个打印
         logger.info("running post filter on generated tasks")
-        cnt_before_filter=len(res)
-        res = functools.reduce(lambda x, f: f.filter(x), self._post_filter, res)  # ⭐ Apply post filters to the results
-        cnt_after_filter=len(res)
+        cnt_before_filter = len(res)
+        tmp = res
+        for filt in self._post_filter:
+            b = len(tmp)
+            tmp = filt.filter(tmp)
+            a = len(tmp)
+            logger.warning(f"[POST FILTER] {filt.__class__.__name__}: {b}->{a}")
+        res = tmp
+        cnt_after_filter = len(res)
         logger.info(f"finish post filter: #before={cnt_before_filter}, #after={cnt_after_filter}")
-        random.shuffle(res)  # ⭐ Shuffle the final list of task objectives
 
+        random.shuffle(res)
         return res
+
+
+
+        # res = functools.reduce(lambda x, f: f.filter(x), self._realtime_filters, res)
+        # # post filter
+        # logger.info("running post filter on generated tasks")
+        # cnt_before_filter=len(res)
+        # res = functools.reduce(lambda x, f: f.filter(x), self._post_filter, res)  # ⭐ Apply post filters to the results
+        # cnt_after_filter=len(res)
+        # logger.info(f"finish post filter: #before={cnt_before_filter}, #after={cnt_after_filter}")
+        # random.shuffle(res)  # ⭐ Shuffle the final list of task objectives
+
+        # return res
 
 
     def _exlore_and_summarize(self,task:Task,data_id:str,rollout_id:str)->list[TaskObjective]:
@@ -295,11 +527,24 @@ class TaskManager(object):
         Returns:
             list[TaskObjective]: A list of TaskObjective objects generated from the exploration and summarization.
         """
-        trajectories=self._step_explore(task,data_id,rollout_id)  # ⭐ Explore the environment
-        task_objectives=sum([self._step_summarize(task,trajectory) for trajectory in trajectories],[])  # ⭐ Summarize the exploration results
-        # check open query
-        assert all([x.task.open_query==True for x in task_objectives]), "all synthetic tasks must have open query"
-        return task_objectives
+        # trajectories=self._step_explore(task,data_id,rollout_id)  # ⭐ Explore the environment
+        # task_objectives=sum([self._step_summarize(task,trajectory) for trajectory in trajectories],[])  # ⭐ Summarize the exploration results
+        # # check open query
+        # assert all([x.task.open_query==True for x in task_objectives]), "all synthetic tasks must have open query"
+        # return task_objectives
+        #gjx
+        trajectories = self._step_explore(task, data_id, rollout_id)
+        logger.warning(f"[ES DEBUG] task_id={task.task_id} got trajectories={len(trajectories)}")
+
+        all_objs = []
+        for ti, traj in enumerate(trajectories):
+            objs = self._step_summarize(task, traj)
+            logger.warning(f"[ES DEBUG] task_id={task.task_id} traj[{ti}] summarize -> {len(objs)} objectives")
+            all_objs.extend(objs)
+
+        logger.warning(f"[ES DEBUG] task_id={task.task_id} total objectives={len(all_objs)}")
+        return all_objs
+
 
 
     def _step_explore(self, task: Task, data_id: str, rollout_id: str)->list[Trajectory]:
@@ -406,6 +651,17 @@ class FullDataset(Dataset):
             None
         """
         self._objectives = self._mixture_strategy.mix_data(self._synthetic_objectives, self._tasks)  # ⭐ Mixes synthetic objectives with current tasks
+        
+        # Record sampled tasks
+        if hasattr(self._manager, 'artifact_recorder') and self._manager.artifact_recorder and self._manager.artifact_recorder.enable:
+            for obj in self._objectives[:self._manager.artifact_recorder.max_examples_per_step]:
+                mixture_source = "synthetic" if obj in self._synthetic_objectives else "original"
+                self._manager.artifact_recorder.write_tasks_sampled(
+                    tasks=[obj],  # Pass TaskObjective directly
+                    mixture_source=mixture_source,
+                    is_task_objective=True,  # Mark that this is a TaskObjective
+                )
+        
         self._dataset = to_rl_dataset(self._objectives, self._tokenizer, self._config, self._processor)  # ⭐ Converts the mixed data into an RL dataset
         logger.info(f"Auto-refreshed dataset: #objectives={len(self._objectives)}, #rlhf={len(self._dataset)}")  # ⭐ Logs the number of objectives and RLHF items
 

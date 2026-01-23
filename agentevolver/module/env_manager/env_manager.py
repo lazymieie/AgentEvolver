@@ -56,7 +56,7 @@ class ParallelEnvManager(object):
     Manages a parallel environment for running multiple tasks, handling retries, logging, and using a language model to generate responses, ultimately returning the trajectories of the tasks.
     """
     def __init__(self, config: DictConfig, async_rollout_manager: BaAsyncLLMServerManager, max_parallel: int,
-                 max_llm_retries: int = 3, **kwargs):
+                 max_llm_retries: int = 3,  **kwargs):
         """
         Initializes the ParallelEnvManager with the provided configuration and settings.
 
@@ -121,8 +121,9 @@ class ParallelEnvManager(object):
             if custom_sampling_params:
                 updated_sampling_params.update(custom_sampling_params)
             updated_sampling_params.update({"logprobs": 1, "return_tokens_as_token_ids": True})  # ⭐ Update sampling parameters
-
+            # 要求模型返回logprobs 和 token ids token 的整数 ID
             input_messages = copy.deepcopy(messages)
+            # async server 可能原地修改 messages
             weighted_addresses = self.async_rollout_manager.chat_scheduler.weighted_addresses
             # logger.info(f"weighted_addresses={weighted_addresses}")
             for i in range(self.max_llm_retries):
@@ -130,6 +131,7 @@ class ParallelEnvManager(object):
                     self.async_rollout_manager.submit_chat_completions(messages=input_messages,
                                                                        sampling_params=updated_sampling_params,
                                                                        request_id=request_id)  # ⭐ Submit chat completions
+                    # async_rollout_manager 会把 assistant 回复 append 到 messages
                     break
 
                 except Exception as e:
@@ -296,6 +298,10 @@ class ParallelEnvManager(object):
                         config=self.config,
                         **kwargs
                     )
+                    # Pass artifact_recorder to AgentFlow if available
+                    if hasattr(self, 'artifact_recorder') and self.artifact_recorder:
+                        agent_flow.artifact_recorder = self.artifact_recorder
+                        agent_flow.exp_worker.artifact_recorder = self.artifact_recorder
 
                     env_worker = EnvWorker(task=task, thread_index=thread_index, config=self.config, tokenizer=self.tokenizer)
                     trajectory: Trajectory = env_worker.execute(data_id=data_id, rollout_id=rollout_id, traj_exp_config=traj_exp_config, agent_flow=agent_flow, tmux=tmux, stop=stop) # ⭐ Execute the task and generate the trajectory
@@ -342,8 +348,11 @@ class ParallelEnvManager(object):
         stop = [False for _ in range(len(tasks) * rollout_n)]
 
         with ThreadPoolExecutor(max_workers=self.max_parallel) as executor:
+            # actor_rollout_ref.rollout.max_env_worker 默认是32
             # 2. submit: submit all tasks to the thread pool
             for data_id, (task, task_exp_config) in enumerate(zip(tasks, task_exp_configs)):
+                #task_exp_configs 和tasks 一一对应 决定经验配置
+                #data_id task在batch里的编号
                 for rollout_id in range(rollout_n):
                     thread_index = data_id * rollout_n + rollout_id
                     add_exp = task_exp_config.add_exp[rollout_id]
@@ -362,6 +371,7 @@ class ParallelEnvManager(object):
             while future_to_params:
                 # if any future is done, process it
                 for future in as_completed(future_to_params):
+                    #谁先跑完 就去处理谁
                     # get the corresponding params, and remove it from the dict
                     params = future_to_params.pop(future)
                     self.step_status_printer(tmux) # cc: i don't know what this is

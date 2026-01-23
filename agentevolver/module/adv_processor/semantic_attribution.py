@@ -1,6 +1,7 @@
 import torch
 import verl.utils.torch_functional as verl_F
-from openai import AsyncOpenAI, RateLimitError, APIError, BadRequestError
+from openai import RateLimitError, APIError, BadRequestError
+from openai import AsyncAzureOpenAI
 import os
 import json
 from pathlib import Path
@@ -191,7 +192,7 @@ def _save_evaluation_record(record: EvaluationRecord, save_dir: Optional[str] = 
 
 
 async def _async_safe_query(
-    client: AsyncOpenAI,
+    client: AsyncAzureOpenAI,
     model: str,
     messages: list[dict],
     semaphore: asyncio.Semaphore,
@@ -203,7 +204,7 @@ async def _async_safe_query(
     Handles content moderation errors by aborting after 2 attempts.
 
     Args:
-        client (AsyncOpenAI): The asynchronous OpenAI client.
+        client (AsyncAzureOpenAI): The asynchronous Azure OpenAI client.
         model (str): The name of the model to use for the query.
         messages (list[dict]): A list of message dictionaries to send to the model.
         semaphore (asyncio.Semaphore): A semaphore to control the number of concurrent requests.
@@ -218,6 +219,11 @@ async def _async_safe_query(
         # 👇 New addition: counter for tracking content moderation failures
         inappropriate_content_error_count = 0
 
+        # NOTE:
+        # - For Azure OpenAI, `model` must be the *deployment name*.
+        # - We keep the argument name `model` for compatibility with existing call sites.
+        model_to_use = model
+
         for attempt in range(max_retries):
             try:
                 # ---------- Normal / thinking model branch (this part of the logic remains unchanged) ----------
@@ -228,9 +234,9 @@ async def _async_safe_query(
                 }
 
                 if is_thinking_model:
-                    print(f"[API] Using streaming mode for thinking model: {model}")
+                    print(f"[API] Using streaming mode for thinking model: {model_to_use}")
                     response = await client.chat.completions.create(
-                        model=model,
+                        model=model_to_use,
                         messages=messages,
                         temperature=0.0,
                         extra_body={"enable_thinking": True},
@@ -254,7 +260,7 @@ async def _async_safe_query(
 
                 else:
                     response = await client.chat.completions.create(
-                        model=model,
+                        model=model_to_use,
                         messages=messages,
                         temperature=0.0,
                         timeout=timeout_s,
@@ -315,7 +321,7 @@ async def _async_safe_query(
 
 
 async def _evaluate_single_sample_api(
-    client: AsyncOpenAI,
+    client: AsyncAzureOpenAI,
     model_name: str,
     task: EvaluationTask,
     semaphore: asyncio.Semaphore,
@@ -329,7 +335,7 @@ async def _evaluate_single_sample_api(
     Evaluates a single sample using the API, including constructing prompts, calling the LLM, parsing results, and saving the evaluation record.
 
     Args:
-        client (AsyncOpenAI): The asynchronous OpenAI client.
+        client (AsyncAzureOpenAI): The asynchronous Azure OpenAI client.
         model_name (str): The name of the model to use for evaluation.
         task (EvaluationTask): The task containing the sample to evaluate.
         semaphore (asyncio.Semaphore): Semaphore to control the number of concurrent API calls.
@@ -479,21 +485,32 @@ async def evaluate_step_flags_parallel(tokenizer, batch, overall_score_source: s
     if evaluation_type != "api":
         raise ValueError(f"❌ Only 'api' evaluation_type is supported, got: {evaluation_type}")
 
-    # Initialize API client
-    api_key = os.getenv("DASHSCOPE_API_KEY")
-    if not api_key:
-        print("❌ [parallel_eval] No API key found in DASHSCOPE_API_KEY environment variable")
-        print("❌ [parallel_eval] Please set: export DASHSCOPE_API_KEY='your-api-key'")
-        print("❌ [parallel_eval] Using random fallback for evaluation")
-        # shuchang: 0809
-        # FIXME: Comment out fallback, enforce API KEY requirement
-        # return _apply_fallback_strategy_parallel(batch, tokenizer), {"fallback_used": True, "evaluation_type": evaluation_type}
-        raise RuntimeError("No API key found in DASHSCOPE_API_KEY environment variable")
+    # Initialize API client - Azure OpenAI only
+    azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+    azure_api_key = os.getenv("AZURE_OPENAI_API_KEY")
+    azure_api_version = os.getenv("OPENAI_API_VERSION", "2024-12-01-preview")
+    # IMPORTANT: in Azure OpenAI, the "model" field is actually the deployment name.
+    azure_deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME") or model_name
 
-    api_client = AsyncOpenAI(
-        api_key=api_key,
-        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    if not (azure_endpoint and azure_api_key):
+        print("❌ [parallel_eval] Missing Azure OpenAI credentials. Please set:")
+        print("   - AZURE_OPENAI_ENDPOINT")
+        print("   - AZURE_OPENAI_API_KEY")
+        print("   - (optional) OPENAI_API_VERSION")
+        print("   - (optional) AZURE_OPENAI_DEPLOYMENT_NAME")
+        raise RuntimeError("Missing Azure OpenAI credentials.")
+
+    print(
+        f"[parallel_eval] Using Azure OpenAI: endpoint={azure_endpoint}, "
+        f"deployment={azure_deployment_name}, api_version={azure_api_version}"
     )
+    api_client = AsyncAzureOpenAI(
+        api_key=azure_api_key,
+        azure_endpoint=azure_endpoint,
+        api_version=azure_api_version,
+    )
+    # Ensure downstream calls use the deployment name
+    model_name = azure_deployment_name
 
     # 🚀 Key optimization: create tasks by sample, not by step
     all_tasks = []

@@ -27,20 +27,20 @@ else
     echo "⚠️ Conda 环境 bfcl 已存在，请删除或修改。（本次已跳过创建）。"
 fi
 
-# 4. 安装依赖
-if [ -d "$SCRIPT_DIR/gorilla" ]; then
-    echo "🔄 更新 gorilla 仓库..."
-    cd "$SCRIPT_DIR/gorilla"
-    git pull
-else
-    echo "📦 克隆 gorilla 仓库..."
-    git clone https://github.com/ShishirPatil/gorilla.git
-fi
+# # 4. 安装依赖
+# if [ -d "$SCRIPT_DIR/gorilla" ]; then
+#     echo "🔄 更新 gorilla 仓库..."
+#     cd "$SCRIPT_DIR/gorilla"
+#     git pull
+# else
+#     echo "📦 克隆 gorilla 仓库..."
+#     git clone https://github.com/ShishirPatil/gorilla.git
+# fi
 
-echo "📋 安装 Python 依赖..."
+# echo "📋 安装 Python 依赖..."
 
-conda run -n bfcl pip install -e "$SCRIPT_DIR/gorilla/berkeley-function-call-leaderboard/."
-conda run -n bfcl pip install -r "$SCRIPT_DIR/requirements.txt"
+# conda run -n bfcl pip install -e "$SCRIPT_DIR/gorilla/berkeley-function-call-leaderboard/."
+# conda run -n bfcl pip install -r "$SCRIPT_DIR/requirements.txt"
 
 # 5. 准备数据
 echo "📁 准备 BFCL 数据..."
@@ -50,7 +50,7 @@ cd "$SCRIPT_DIR/"
 echo "当前工作目录: $(pwd)"
 echo "脚本目录: $SCRIPT_DIR"
 
-python "$SCRIPT_DIR/bfcl_dataprocess.py"
+conda run -n bfcl python "$SCRIPT_DIR/bfcl_dataprocess.py"
 
 # 6. 设置环境变量
 echo "🌎 设置环境变量..."

@@ -66,6 +66,17 @@ def to_rl_dataset(
         processed_records.append(record)
 
     df = pd.DataFrame(processed_records)
+    import json
+
+# ✅ 把 extras（dict）序列化为字符串，避免 parquet struct/empty-struct 问题
+    if "extras" in df.columns:
+        df["extras"] = df["extras"].apply(
+            lambda x: json.dumps(x, ensure_ascii=False)
+        )
+    else:
+        df["extras"] = None
+        #gjx
+
     with tempfile.NamedTemporaryFile(delete=False) as f:
         df.to_parquet(f.name)
 

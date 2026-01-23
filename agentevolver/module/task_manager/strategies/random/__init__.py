@@ -86,8 +86,39 @@ class LlmRandomSamplingExploreStrategy(TaskExploreStrategy):
         )
 
         return [traj]
-    
+#gjx   
+    # def summarize(self, task: Task, trajectory: Trajectory) -> list[TaskObjective]:
+    #     llm_fn = self._get_llm_chat_fn(
+    #         self.llm_client_summarize,
+    #         sampling_params={
+    #             "temperature": self._exploration_llm_temperature,
+    #             "top_p": self._exploration_llm_top_p,
+    #             "top_k": self._exploration_llm_top_k,
+    #         }
+    #     )
+    #     old_objectives = self._old_retrival.retrieve_objectives(task)
+    #     # mask information that may include the real query
+    #     # [0]: system prompt, [1]: may be user query or system prompt in user role, [2]: user query
+    #     trajectory.steps[1]['content'] = '[MASKED]'
+    #     trajectory.steps[2]['content'] = "[MASKED]"
+        
+    #     system_prompt, user_prompt = get_task_summarize_prompt(
+    #         [trajectory], old_objectives, self.env_profile
+    #     )
+    #     messages = [
+    #         {"role": "system", "content": system_prompt},
+    #         {"role": "user", "content": user_prompt},
+    #     ]
+    #     llm_output = llm_fn(messages=messages)["content"]
+        
+    #     task=task.copy()
+    #     task.evaluator='synthetic'
+    #     tasks = parse_tasks_from_response(task, llm_output)
+    #     return tasks
     def summarize(self, task: Task, trajectory: Trajectory) -> list[TaskObjective]:
+        import os, time
+        from loguru import logger
+
         llm_fn = self._get_llm_chat_fn(
             self.llm_client_summarize,
             sampling_params={
@@ -96,12 +127,15 @@ class LlmRandomSamplingExploreStrategy(TaskExploreStrategy):
                 "top_k": self._exploration_llm_top_k,
             }
         )
+
         old_objectives = self._old_retrival.retrieve_objectives(task)
-        # mask information that may include the real query
-        # [0]: system prompt, [1]: may be user query or system prompt in user role, [2]: user query
-        trajectory.steps[1]['content'] = '[MASKED]'
-        trajectory.steps[2]['content'] = "[MASKED]"
-        
+
+        # ⚠️ 建议 deepcopy，避免污染原 trajectory（不是主因，但好习惯）
+        import copy
+        trajectory = copy.deepcopy(trajectory)
+        trajectory.steps[1]["content"] = "[MASKED]"
+        trajectory.steps[2]["content"] = "[MASKED]"
+
         system_prompt, user_prompt = get_task_summarize_prompt(
             [trajectory], old_objectives, self.env_profile
         )
@@ -109,12 +143,46 @@ class LlmRandomSamplingExploreStrategy(TaskExploreStrategy):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-        llm_output = llm_fn(messages=messages)["content"]
-        
-        task=task.copy()
-        task.evaluator='synthetic'
-        tasks = parse_tasks_from_response(task, llm_output)
+
+        # ===== 调模型 =====
+        resp = llm_fn(messages=messages)
+        llm_output = resp.get("content", "")
+
+        # ===== 🔍 DEBUG：打印 & 落盘 =====
+        logger.warning(
+            f"[SUM DEBUG] task_id={task.task_id} llm_output_len={len(llm_output)}"
+        )
+
+        logger.warning("[SUM DEBUG] llm_output HEAD ↓↓↓")
+        logger.warning(llm_output[:800] if llm_output else "<<< EMPTY >>>")
+
+        logger.warning("[SUM DEBUG] llm_output TAIL ↑↑↑")
+        logger.warning(llm_output[-800:] if llm_output else "<<< EMPTY >>>")
+
+        dump_path = f"/tmp/summarize_llm_output_{os.getpid()}_{int(time.time())}.txt"
+        try:
+            with open(dump_path, "w", encoding="utf-8") as f:
+                f.write(llm_output or "")
+            logger.warning(f"[SUM DEBUG] raw llm_output dumped to {dump_path}")
+        except Exception as e:
+            logger.warning(f"[SUM DEBUG] dump failed: {e}")
+
+        # ===== 解析 =====
+        task = task.copy()
+        task.evaluator = "synthetic"
+
+        try:
+            tasks = parse_tasks_from_response(task, llm_output)
+        except Exception as e:
+            logger.exception(f"[SUM DEBUG] parse_tasks_from_response crashed: {e}")
+            return []
+
+        logger.warning(
+            f"[SUM DEBUG] task_id={task.task_id} parsed_objectives={len(tasks)}"
+        )
+
         return tasks
+
     
     def _get_llm_chat_fn(self, llm_client:LlmClient, sampling_params: Optional[dict] = None) -> Callable:
         def llm_chat(
@@ -147,7 +215,15 @@ class LlmRandomSamplingExploreStrategy(TaskExploreStrategy):
                     logger.exception(f"rollout_server.{i} error: {e.args}")
                     time.sleep(2**i)
 
-            assert res is not None and res!="", f"LLM client failed to chat"
+            # assert res is not None and res!="", f"LLM client failed to chat"
+            if not res:
+                logger.error("LLM client returned empty. Skip this rollout by returning placeholder.")
+                return {
+                    "role": "assistant",
+                    "content": "[LLM_EMPTY]"   # 或者 "[CONTENT_FILTERED]" / "[HIT_LIMIT]"
+                }
+
+        
             return {
                 "role": "assistant",
                 "content": res,

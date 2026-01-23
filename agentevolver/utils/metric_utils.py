@@ -101,7 +101,67 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> Dict[str,
             - response_length/mean, max, min, clip_ratio: Statistics about response lengths
             - prompt_length/mean, max, min, clip_ratio: Statistics about prompt lengths
     """
-    is_llm_reward = torch.tensor([batch.non_tensor_batch["original_extras"][i]["evaluator"]!='env' for i in range(len(batch.non_tensor_batch["original_extras"]))],dtype=torch.bool,device=batch.batch.device)
+    #gjx
+    import numpy as np
+    import json
+
+    def normalize_extras(extras):
+        if extras is None:
+            return []
+
+        # unwrap numpy
+        if isinstance(extras, np.ndarray):
+            extras = extras.tolist()
+
+        # unify to list
+        if not isinstance(extras, (list, tuple)):
+            extras = [extras]
+
+        normalized = []
+        for x in extras:
+            if isinstance(x, str):
+                # JSON string → dict (optional)
+                try:
+                    parsed = json.loads(x)
+                    if isinstance(parsed, dict):
+                        x = parsed
+                except Exception:
+                    pass
+            normalized.append(x)
+
+        return normalized
+
+    
+
+    original_extras = batch.non_tensor_batch.get("original_extras")
+    original_extras = normalize_extras(original_extras)
+    if original_extras is None:
+        raise ValueError("non_tensor_batch['original_extras'] is None")
+
+    if not isinstance(original_extras, (list, tuple)):
+        original_extras = [original_extras]
+
+    flags = []
+    for i, extra in enumerate(original_extras):
+        if isinstance(extra, dict):
+            evaluator = extra.get("evaluator")
+        elif isinstance(extra, str):
+            # ⭐ 兼容：extra 本身就是 evaluator
+            evaluator = extra
+        else:
+            raise TypeError(
+                f"original_extras[{i}] must be dict or str, got {type(extra)}: {extra}"
+            )
+
+        flags.append(evaluator != "env")
+
+    is_llm_reward = torch.tensor(
+        flags,
+        dtype=torch.bool,
+        device=batch.batch.device
+    )
+
+    # is_llm_reward = torch.tensor([batch.non_tensor_batch["original_extras"][i]["evaluator"]!='env' for i in range(len(batch.non_tensor_batch["original_extras"]))],dtype=torch.bool,device=batch.batch.device)
     # it is not a good idea to calculate n this way
     n=batch.batch["token_level_scores"].size(0)//is_llm_reward.size(0)
     is_llm_reward=is_llm_reward.repeat_interleave(n)

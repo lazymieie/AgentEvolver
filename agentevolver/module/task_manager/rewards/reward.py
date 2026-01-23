@@ -91,7 +91,7 @@ class LlmAsJudgeRewardCalculator(RewardCalculator):
     """
     A naive RewardCalculator that uses LLM as judge.
     """
-    def __init__(self,task:Task, model_name='qwen3-235b-a22b-instruct-2507'):
+    def __init__(self,task:Task, model_name='gpt-4o-2'):
         """
         Initializes the LlmAsJudgeRewardCalculator with a specific task and model name.
 
@@ -101,7 +101,7 @@ class LlmAsJudgeRewardCalculator(RewardCalculator):
         """
         super().__init__(task)
         self._client=DashScopeClient(model_name=model_name)  # ⭐ Initializes the LLM client with the specified model name
-
+#gjx
     def pack_message(self, trajectory: Trajectory):
         """Pack trajectory into a message.
         

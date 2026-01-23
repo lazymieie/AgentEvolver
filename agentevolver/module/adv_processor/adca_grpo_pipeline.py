@@ -128,6 +128,43 @@ def apply_adca_grpo(
     })
 
     
+    # Record ADCA step scores
+    if enable_adca_grpo or enable_adca_metric:
+        try:
+            # Try to get artifact_recorder from batch
+            artifact_recorder = getattr(batch, 'artifact_recorder', None)
+            
+            if artifact_recorder and artifact_recorder.enable and artifact_recorder.dump_adca:
+                step_flags_list = flags if isinstance(flags, list) else flags.get("llm_parsed_flags", [])
+                # Extract task/traj info from batch
+                prompts = batch.batch.get("prompts", [])
+                for sample_idx in range(min(len(step_flags_list), len(prompts), artifact_recorder.max_examples_per_step)):
+                    if sample_idx >= len(step_flags_list) or not step_flags_list[sample_idx]:
+                        continue
+                    
+                    flags_for_sample = step_flags_list[sample_idx]
+                    steps_data = []
+                    for step_idx, flag in enumerate(flags_for_sample):
+                        steps_data.append({
+                            "t": step_idx,
+                            "label": "GOOD" if flag else "BAD",
+                            "r_attr": 1.0 if flag else -1.0,  # Simplified
+                            "analysis": None,  # Could extract from LLM response if available
+                        })
+                    
+                    # Extract task_id and traj_id from batch (simplified)
+                    task_id = f"batch_{global_steps}_sample_{sample_idx}"
+                    traj_id = f"traj_{global_steps}_{sample_idx}"
+                    
+                    artifact_recorder.write_adca_step_scores(
+                        task_id=task_id,
+                        traj_id=traj_id,
+                        steps=steps_data,
+                        global_step=global_steps,
+                    )
+        except Exception as e:
+            logger.warning(f"Failed to record ADCA step scores: {e}")
+
     # --- Part C: PRM-GRPO Advantage Overwriting ---
     if enable_adca_grpo and global_steps < prm_steps:
         # === (C0) Cosine decay alpha (no warmup) ===

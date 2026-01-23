@@ -42,6 +42,8 @@ class AgentFlow(BaseAgentFlow):
         self.cmt: Union[Linear_CMT, LinearThinkCMT] = None
         self.console_debug_mode: bool = self.config.actor_rollout_ref.rollout.debug_llm_io
         self.exp_worker = ExperienceWorker(config=self.config)
+        # artifact_recorder will be set from trainer if available
+        self.exp_worker.artifact_recorder = None
 
 
     def execute(self, context_manager, init_messages: List[dict], env: EnvClient, instance_id: str, tmux, stop, thread_index, task_id, traj_exp_config,data_id="", rollout_id="", query="", **kwargs) -> Linear_CMT:
@@ -106,13 +108,14 @@ class AgentFlow(BaseAgentFlow):
                 logger.warning(f"Token overflow detected at step {act_step}. Current token count exceeds the limit.")
                 self.cmt.is_terminated = False # trajectory not finished.
                 break
-
+            # print("debug：act_step")
+            # print(act_step)
             # 5. 🤖 call llm
             llm_output = self.llm_chat_fn(step_input_message_arr, request_id=request_id)  # ⭐ Call the LLM to generate the next response
             if (stop is not None) and stop[thread_index]:  # Check if the thread should stop (because other threads have completed, making this thread useless)
                 self.cmt.discarded = True
                 break
-
+            
             # 6. 💾 save llm output
             self.cmt.save_llm_output(llm_output, input_msg_ref=step_input_message_arr)  # ⭐ Save the LLM output
             tmux['token'][thread_index] += self.cmt.generated_token_cnt
@@ -167,6 +170,51 @@ class AgentFlow(BaseAgentFlow):
         self.cmt.reward = Reward(outcome=score, success_rate=success_rate, madness=self.cmt.compute_madness(), description=reason)  # ⭐ Set the reward for the context
         self.cmt.reward = self.cmt.reward_patch(self.cmt.reward)
         self.cmt.remove_last_context()
+
+        # Record rollout
+        if hasattr(self, 'artifact_recorder') and self.artifact_recorder and self.artifact_recorder.enable:
+            try:
+                # Extract steps from CMT
+                steps_list = []
+                if hasattr(self.cmt, 'steps') and self.cmt.steps:
+                    for i, step_msg in enumerate(self.cmt.steps):
+                        if isinstance(step_msg, dict):
+                            step_dict = {
+                                "t": i,
+                                "obs": step_msg.get("content", ""),
+                                "action": "",  # Will be filled from next step if available
+                            }
+                            steps_list.append(step_dict)
+                
+                # Determine mode from traj_exp_config
+                mode = "woexp"
+                if hasattr(traj_exp_config, 'add_exp') and traj_exp_config.add_exp:
+                    mode = "mixed"
+                
+                traj_id = f"{data_id}_{rollout_id}" if data_id and rollout_id else f"{task_id}_unknown"
+                self.artifact_recorder.write_rollouts(
+                    task_id=task_id,
+                    traj_id=traj_id,
+                    mode=mode,
+                    n_steps=len(steps_list) if steps_list else 0,
+                    steps=steps_list if self.artifact_recorder.dump_steps else None,
+                )
+                
+                # Record reward
+                self.artifact_recorder.write_rewards(
+                    task_id=task_id,
+                    traj_id=traj_id,
+                    reward_value=float(score),
+                    reward_detail={
+                        "success_rate": success_rate,
+                        "madness": self.cmt.compute_madness(),
+                        "description": reason,
+                    },
+                    grader_name=getattr(self._reward_calculator, '__class__', {}).__name__ if self._reward_calculator else "env",
+                )
+            except Exception as e:
+                import logging
+                logging.warning(f"Failed to record rollout/reward: {e}")
 
         with log_generate_lock:
             self.cmt.generate_log(task_id=task_id)  # ⭐ Generate the log for the task

@@ -458,8 +458,7 @@ actor_rollout_ref:
       enable: False
 
       # null for no limit (default max_length // 3)
-      max_turns: null
-
+      max_turns: 3
       # null for no tool
       tool_config_path: null
 
