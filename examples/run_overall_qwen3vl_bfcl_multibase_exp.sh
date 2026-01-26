@@ -35,7 +35,7 @@ export HF_DATASETS_OFFLINE=1
 export RAY_DISABLE_DASHBOARD=1
 #设置合成任务优势衰减（初始化经验池时不需要，但保留以防后续使用）
 # export DEBUG_ARG="synth_decay"
-
+CUDA_VISIBLE_DEVICES=4,5,6,7 \
 python3 -m agentevolver.main_ppo \
     --config-path="$CONFIG_PATH" \
     --config-name='script_config' \
@@ -48,9 +48,7 @@ python3 -m agentevolver.main_ppo \
     exp_manager.init_exp_before_training=True \
     exp_manager.init_exp_only=True \
     exp_manager.reme.base_url=${em_url} \
-    exp_manager.reme.workspace_id="qwen3vl_bfcl_multibase" \
-    exp_manager.reme.enable_summarizer=True \
-    exp_manager.reme.enable_context_generator=True \
+    exp_manager.reme.workspace_id="qwen3vl_bfcl_multi_turn" \
     exp_manager.reme.updated_freq=0 \
     exp_manager.reme.retrieve_top_k=5 \
     actor_rollout_ref.actor.off_cliprange_high=0.6 \
@@ -104,7 +102,7 @@ python3 -m agentevolver.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger="['tensorboard','console']" \
     trainer.project_name="bfcl_qwen3-vl-4b" \
-    trainer.experiment_name="bfcl_multibase_qwen3-vl-4b_agentevolver" \
+    trainer.experiment_name="bfcl_multiturn_qwen3_vl_4b_agentevolver" \
     trainer.nnodes=1 \
     trainer.save_freq=10000 \
     trainer.test_freq=10 \

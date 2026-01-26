@@ -77,7 +77,13 @@ class ExperienceManager(object):
                 result = future.result()
                 results.append(result)
             except Exception as e:
-                print(f"Error in summary task: {e}")
+                err_msg = str(e).lower()
+                # 处理 Azure OpenAI 内容过滤错误
+                if "content_filter" in err_msg or "responsibleai" in err_msg or "self_harm" in err_msg:
+                    logger.warning(f"Content filter error in summary task (trajectories will be skipped): {e}")
+                    # 继续执行，不中断整个流程
+                else:
+                    logger.error(f"Error in summary task: {e}")
         
         return
 

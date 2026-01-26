@@ -55,8 +55,8 @@ conda run -n bfcl python "$SCRIPT_DIR/bfcl_dataprocess.py"
 # 6. 设置环境变量
 echo "🌎 设置环境变量..."
 export ENV_PATH="$SCRIPT_DIR"
-export BFCL_DATA_PATH="$ENV_PATH/bfcl_data/multi_turn_base_processed.jsonl"
-export BFCL_SPLID_ID_PATH="$ENV_PATH/bfcl_data/multi_turn_base_split_ids.json"
+export BFCL_DATA_PATH="$ENV_PATH/bfcl_data/multi_turn_processed.jsonl"
+export BFCL_SPLID_ID_PATH="$ENV_PATH/bfcl_data/multi_turn_split_ids.json"
 export BFCL_ANSWER_PATH="$ENV_PATH/bfcl_eval/possible_answer"
 export OPENAI_API_KEY="$OPENAI_API_KEY"
 

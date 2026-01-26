@@ -843,7 +843,7 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
         sample_outputs = []
         sample_scores = []
 
-        for i, test_data in enumerate(self.val_dataloader):
+        for i1, test_data in enumerate(self.val_dataloader):
             test_batch = DataProto.from_single_dict(test_data)
 
             # repeat test batch
@@ -993,7 +993,7 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                 #          ) for i in range(len(test_gen_batch))]
                 task_exp_configs = self.exp_manager.get_complete_exp_configs(tasks, mode="validate")
                 print("=" * 10 + "start validate rollout" + "=" * 10)
-                trajectories = self.env_manager.rollout(tasks, task_exp_configs, mode="validate", epoch=f"test.1.{i}")  # ⭐ Execute the rollout to generate trajectories
+                trajectories = self.env_manager.rollout(tasks, task_exp_configs, mode="validate", epoch=f"test.1.{i1}")  # ⭐ Execute the rollout to generate trajectories
                 print("=" * 10 + "end validate rollout" + "=" * 10)
                 test_output_gen_batch = self.env_manager.to_dataproto(trajectories)
                 # test_output_gen_batch_padded = self.explorer_manager.rollout(test_gen_batch_padded)

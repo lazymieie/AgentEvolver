@@ -65,11 +65,20 @@ class EMClient(HttpClient):
             "workspace_id": workspace_id,
             # "metadata": kwargs
         }
-        response = self.request(json_data=json_data, headers={"Content-Type": "application/json"})  # ⭐ Send the request to the server
-        if response is None:
-            logger.warning("error call_summarizer")
+        try:
+            response = self.request(json_data=json_data, headers={"Content-Type": "application/json"})  # ⭐ Send the request to the server
+            if response is None:
+                logger.warning("error call_summarizer: response is None")
+                return "", time.time() - start_time
+            return response, time.time() - start_time
+        except Exception as e:
+            err_msg = str(e).lower()
+            # 处理 Azure OpenAI 内容过滤错误
+            if "content_filter" in err_msg or "responsibleai" in err_msg or "self_harm" in err_msg:
+                logger.warning(f"Content filter error in call_summarizer (trajectories will be skipped): {e}")
+            else:
+                logger.error(f"Error in call_summarizer: {e}")
             return "", time.time() - start_time
-        return response, time.time() - start_time
 
 
 def main():
