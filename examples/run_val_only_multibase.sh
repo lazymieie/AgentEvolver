@@ -53,7 +53,7 @@ export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export RAY_DISABLE_DASHBOARD=1
 
-CUDA_VISIBLE_DEVICES=4,5,6,7 \
+
 python3 -m agentevolver.main_ppo \
     --config-path="$CONFIG_PATH" \
     --config-name='script_config' \
@@ -94,7 +94,7 @@ python3 -m agentevolver.main_ppo \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.use_kl_in_reward=False \
-    trainer.n_gpus_per_node=4 \
+    trainer.n_gpus_per_node=8 \
     trainer.critic_warmup=0 \
     trainer.logger="['tensorboard','console']" \
     trainer.project_name="bfcl-qwen3vl-4b" \

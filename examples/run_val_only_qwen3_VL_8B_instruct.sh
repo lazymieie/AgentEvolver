@@ -33,41 +33,33 @@ export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export RAY_DISABLE_DASHBOARD=1
-#设置合成任务优势衰减
-export DEBUG_ARG="synth_decay"
+
+
+# ---- Start Environment Service ----
+# conda activate appworld
+# bash env_service/launch_script/appworld.sh
+
+# ---- Start Training ----
+PROJECT_DIR="$(pwd)"
+CONFIG_PATH="$PROJECT_DIR/config"
+env_url=http://localhost:8080
+current_time=$(date "+%Y%m%d_%H%M%S")
+log_file="log_${current_time}.log"
+
+export HF_HUB_DISABLE_TELEMETRY=1
+export HF_HUB_DISABLE_SYMLINKS_WARNING=1
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
+export RAY_DISABLE_DASHBOARD=1
 
 CUDA_VISIBLE_DEVICES=4,5,6,7 \
 python3 -m agentevolver.main_ppo \
     --config-path="$CONFIG_PATH" \
     --config-name='script_config' \
     env_service.env_url=$env_url \
-    exp_manager.val_rollout_mode="woexp" \
-    exp_manager.train_rollout_mode="mixed" \
-    exp_manager.rollout_ratio=0.5 \
-    exp_manager.train_sample_mode="alldiscard" \
-    exp_manager.train_sample_keepratio=0.0 \
-    exp_manager.init_exp_before_training=False \
-    exp_manager.init_exp_only=False \
-    exp_manager.reme.base_url=${em_url} \
-    exp_manager.reme.workspace_id="qwen3vl_bfcl_multi_turn" \
-    exp_manager.reme.enable_summarizer=False \
-    exp_manager.reme.enable_context_generator=True \
-    exp_manager.reme.updated_freq=0 \
-    exp_manager.reme.retrieve_top_k=5 \
     actor_rollout_ref.actor.off_cliprange_high=0.6 \
-    attribution_driven_credit_assignment.enable=True \
-    attribution_driven_credit_assignment.adca_grpo.enable_adca_metric=true \
-    attribution_driven_credit_assignment.adca_grpo.prm_scheme='decouple' \
-    attribution_driven_credit_assignment.llm_evaluation_log_dir="experiments/tech_synthetic/${experiment_name}/llm_evaluation_logs" \
-    attribution_driven_credit_assignment.adca_grpo.alpha=0.2 \
-    attribution_driven_credit_assignment.adca_grpo.skip_type='skip_small_adv' \
-    attribution_driven_credit_assignment.adca_grpo.prm_steps=20 \
-    attribution_driven_credit_assignment.adca_grpo.equal_trajectory_weight=true \
-    attribution_driven_credit_assignment.evaluation_type='api' \
-    attribution_driven_credit_assignment.consistent_scale=1.0 \
-    attribution_driven_credit_assignment.pos_unconsistent_scale=0.2 \
-    attribution_driven_credit_assignment.neg_unconsistent_scale=0.2 \
-    attribution_driven_credit_assignment.model='gpt-4o-2' \
+    attribution_driven_credit_assignment.enable=false \
     algorithm.adv_estimator=grpo \
     data.train_batch_size=32 \
     data.max_prompt_length=6000 \
@@ -75,13 +67,13 @@ python3 -m agentevolver.main_ppo \
     data.filter_overlong_prompts=True \
     data.truncation='left' \
     data.return_raw_chat=True \
-    actor_rollout_ref.rollout.use_qwen3=True \
+    actor_rollout_ref.rollout.use_qwen3=True  \
     actor_rollout_ref.rollout.enable_request_id=False \
     actor_rollout_ref.rollout.prompt_length=20480 \
     actor_rollout_ref.rollout.response_length=6096 \
     actor_rollout_ref.rollout.max_model_len=27580 \
     actor_rollout_ref.rollout.temperature=0.9 \
-    actor_rollout_ref.model.path=/vepfs-cnbj3fa964354bf4/gjx/AgentEvolver/model/Qwen/Qwen3-VL-4B-Instruct \
+    actor_rollout_ref.model.path=/vepfs-cnbj3fa964354bf4/gjx/AgentEvolver/model/Qwen/Qwen3-VL-8B-Instruct \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
@@ -97,23 +89,25 @@ python3 -m agentevolver.main_ppo \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.mode=async \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
-    actor_rollout_ref.rollout.n=8 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+    actor_rollout_ref.rollout.n=1 \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.use_kl_in_reward=False \
     trainer.n_gpus_per_node=4 \
     trainer.critic_warmup=0 \
     trainer.logger="['tensorboard','console']" \
-    trainer.project_name="bfcl_qwen3-vl-4b" \
-    trainer.experiment_name="bfcl_multiturn_train_qwen3-vl-4b_agentevolver" \
+    trainer.project_name="bfcl-qwen3-VL-8B-Instruct" \
+    trainer.experiment_name="bfcl_qwen3-VL-8B-Instruct_val_only" \
     trainer.nnodes=1 \
-    trainer.save_freq=10 \
+    trainer.save_freq=10000 \
     trainer.test_freq=10 \
-    trainer.total_epochs=40 \
-    trainer.val_before_train=False \
+    trainer.total_epochs=0 \
+    trainer.val_before_train=True \
     trainer.validation_data_dir="experiments/tech_synthetic/${experiment_name}/validation_log" \
     trainer.rollout_data_dir="experiments/tech_synthetic/${experiment_name}/rollout_log" \
+    trainer.resume_mode='disable' \
+    trainer.val_only=true \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=27580 \
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=27580 \
     actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=27580 \
@@ -122,10 +116,8 @@ python3 -m agentevolver.main_ppo \
     data.train_files=null \
     data.val_files=null \
     env_service.env_type=bfcl \
-    task_manager.n=8 \
-    task_manager.mixture.synthetic_data_ratio=0.5 \
-    task_manager.mixture.use_original_tasks=False \
-    task_manager.grader.synthetic_grader=llm-binary-gt-no_constraint \
+    task_manager.n=0 \
+    task_manager.mixture.synthetic_data_ratio=0.0 \
+    task_manager.mixture.use_original_tasks=True \
     actor_rollout_ref.rollout.val_kwargs.n=8 \
-    debug_artifacts.enable=true\
     2>&1 | tee "$log_file" \

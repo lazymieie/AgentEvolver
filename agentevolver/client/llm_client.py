@@ -291,7 +291,7 @@ class DashScopeClient:
     def chat_stream_with_retry(
         self,
         messages: list[dict[str, str]],
-        max_retries: int = 3,
+        max_retries: int = 30,
         **kwargs,
     ) -> Generator[str, None, None]:
         """
