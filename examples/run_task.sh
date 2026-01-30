@@ -77,8 +77,8 @@ python3 -m agentevolver.main_ppo \
     actor_rollout_ref.rollout.use_qwen3=True \
     actor_rollout_ref.rollout.enable_request_id=False \
     actor_rollout_ref.rollout.prompt_length=20480 \
-    actor_rollout_ref.rollout.response_length=17480 \
-    actor_rollout_ref.rollout.max_model_len=64000 \
+    actor_rollout_ref.rollout.response_length=6096 \
+    actor_rollout_ref.rollout.max_model_len=27580 \
     actor_rollout_ref.rollout.temperature=0.9 \
     actor_rollout_ref.model.path=/vepfs-cnbj3fa964354bf4/gjx/AgentEvolver/model/Qwen/Qwen3-VL-4B-Instruct \
     actor_rollout_ref.actor.optim.lr=1e-6 \
@@ -106,7 +106,7 @@ python3 -m agentevolver.main_ppo \
     trainer.logger="['tensorboard','console']" \
     trainer.project_name="bfcl_qwen3-vl-4b" \
     trainer.experiment_name="bfcl_multiturn_train_qwen3-vl-4b_agentevolver" \
-    trainer.nnodes=4 \
+    trainer.nnodes=1 \
     trainer.save_freq=10 \
     trainer.test_freq=10 \
     trainer.total_epochs=40 \
