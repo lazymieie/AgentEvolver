@@ -53,7 +53,7 @@ export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export RAY_DISABLE_DASHBOARD=1
 
-
+CUDA_VISIBLE_DEVICES=4,5,6,7 \
 python3 -m agentevolver.main_ppo \
     --config-path="$CONFIG_PATH" \
     --config-name='script_config' \
@@ -74,7 +74,7 @@ python3 -m agentevolver.main_ppo \
     actor_rollout_ref.rollout.response_length=6096 \
     actor_rollout_ref.rollout.max_model_len=26576 \
     actor_rollout_ref.rollout.temperature=0.9 \
-    actor_rollout_ref.model.path=/vepfs-cnbj3fa964354bf4/gjx/AgentEvolver/model/Qwen/Qwen3-VL-8B-Thinking \
+    actor_rollout_ref.model.path=/vepfs-cnbj3fa964354bf4/gjx/AgentEvolver/model/Qwen/Qwen3-VL-4B-Instruct \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
@@ -96,18 +96,18 @@ python3 -m agentevolver.main_ppo \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.use_kl_in_reward=False \
-    trainer.n_gpus_per_node=8 \
+    trainer.n_gpus_per_node=4 \
     trainer.critic_warmup=0 \
     trainer.logger="['tensorboard','console']" \
-    trainer.project_name="bfcl-qwen3-VL-8B-Thinking" \
-    trainer.experiment_name="bfcl_qwen3-VL-8B-Thinking_val_only" \
+    trainer.project_name="bfcl-qwen3-VL-4B-Instruct_think" \
+    trainer.experiment_name="bfcl_qwen3-VL-4B-Instruct_val_only_think" \
     trainer.nnodes=1 \
     trainer.save_freq=10000 \
     trainer.test_freq=10 \
     trainer.total_epochs=0 \
     trainer.val_before_train=True \
-    trainer.validation_data_dir="experiments/tech_synthetic/bfcl_qwen3-VL-8B-Thinking_val_only/validation_log" \
-    trainer.rollout_data_dir="experiments/tech_synthetic/bfcl_qwen3-VL-8B-Thinking_val_only/rollout_log" \
+    trainer.validation_data_dir="experiments/tech_synthetic/bfcl_qwen3-VL-4B-Instruct_val_only_think/validation_log" \
+    trainer.rollout_data_dir="experiments/tech_synthetic/bfcl_qwen3-VL-4B-Instruct_val_only_think/rollout_log" \
     trainer.resume_mode='disable' \
     trainer.val_only=true \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=27580 \

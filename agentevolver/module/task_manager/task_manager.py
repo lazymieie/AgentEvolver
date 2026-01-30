@@ -314,18 +314,6 @@ class TaskManager(object):
         from loguru import logger
         from tqdm import tqdm
 
-        import random
-        random.seed(42)
-
-
-        max_tasks =  50
-
-        if max_tasks is not None and len(tasks) > max_tasks:
-            tasks = random.sample(list(tasks), max_tasks)
-            logger.warning(
-                f"[GEN DEBUG] randomly sampled tasks: {len(tasks)} / original={len(tasks)}"
-            )
-
 
         if resume_file is None:
             resume_file = ".generate_task.checkpoint.json"

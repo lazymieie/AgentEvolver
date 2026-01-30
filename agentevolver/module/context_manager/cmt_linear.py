@@ -123,6 +123,10 @@ class Linear_CMT(Trajectory, ContextManagerBase):
             prompt_text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             return len(self.tokenizer(prompt_text, return_tensors="pt", padding=False)["input_ids"][0])  # ⭐ Calculate the total number of tokens in the messages
         messages = self.prepare_previous_context(mod="raw")
+        if(get_seq_length(messages) > self.max_seq_length ):
+            print(
+                f"current_tokens={get_seq_length(messages)}, max_tokens={self.max_seq_length}"
+                )
         return get_seq_length(messages) < self.max_seq_length   # self.config.env_engine.max_seq_length = 20480
 
 

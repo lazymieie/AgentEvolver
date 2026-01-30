@@ -194,6 +194,23 @@ class MemoryCoreCMT(Linear_CMT):
             expected_sections=["current step", "previous instruction code", "relevant environment feedback", "next-step instruction code"],
             default_placeholder="❌ not available."
         )  # ⭐ Extract and decompose the LLM output into sections
+        
+        # DEBUG (disabled): Check if LLM output format is correct
+        # next_step_code = lm_result_decompose.get('next-step instruction code', '')
+        # current_step = lm_result_decompose.get('current step', '')
+        # relevant_feedback = lm_result_decompose.get('relevant environment feedback', '')
+        #
+        # print_dict({
+        #     "DEBUG_MEMORY_SAVE_LLM_OUTPUT": {
+        #         "find_everything": find_everything,
+        #         "find_nothing": find_nothing,
+        #         "current_step": current_step[:200] if current_step else "EMPTY",
+        #         "next_step_instruction_code": next_step_code[:200] if next_step_code else "EMPTY",
+        #         "relevant_environment_feedback": relevant_feedback[:200] if relevant_feedback else "EMPTY",
+        #         "next_step_code_is_empty": not next_step_code or next_step_code.strip() == "" or "PLACEHOLDER" in next_step_code.upper(),
+        #     }
+        # }, mod='memory_debug')
+        
         from textwrap import dedent
         memory_construct = dedent("""
         >> step: {current_step}
@@ -243,6 +260,8 @@ class MemoryCMT(MemoryCoreCMT):
             config: Configuration object containing environment and model settings.
             tokenizer: Tokenizer instance for processing text.
         """
+        super().__init__(config, tokenizer)
+        self.current_step = 0
         self.config = config
         self.tokenizer = tokenizer
         self.full_context: List[ExtendedMessage] = []
@@ -282,6 +301,19 @@ class MemoryCMT(MemoryCoreCMT):
         for steps in self.grouped_steps:
             result.grouped_step_list += [self.to_role_content(steps)]  # ⭐ Convert each group of steps to role-content format and add to the result
         grouped_steps: GroupedSteps = result
+        # DEBUG (disabled): trace reward status for MemoryCMT
+        # try:
+        #     reward_dump = None if self.reward is None else self.reward.model_dump()
+        # except Exception:
+        #     reward_dump = f"reward_dump_failed_type={type(self.reward)}"
+        # print_dict(
+        #     {
+        #         "task_id": task_id,
+        #         "num_groups": grouped_steps.num_groups,
+        #         "reward": reward_dump,
+        #     },
+        #     mod="reward_debug_memory",
+        # )
         # for index, steps in enumerate(grouped_steps.grouped_step_list):
         #     print_listofdict(steps, mod='appworld_io', header=f'Task-{task_id} {index}/{grouped_steps.num_groups}')
         return
@@ -380,17 +412,58 @@ class MemoryCMT(MemoryCoreCMT):
         Note:
             - Extracts Python code from markdown code blocks (```python```)
             - Returns the raw content if no valid code blocks are found
+            - Falls back to raw content if markdown parsing fails (similar to prepare_next_llm_context)
         """
         ext_message_arr_memory = self.filter_context_via_author("llm")
+        if len(ext_message_arr_memory) == 0:
+            # DEBUG (disabled)
+            # print_dict({
+            #     "DEBUG_MEMORY_PREPARE_WORLD_INTERACTION": {
+            #         "error": "No LLM messages found in full_context",
+            #         "full_context_authors": [msg.author for msg in self.full_context],
+            #     }
+            # }, mod='memory_debug')
+            return ""
 
         # extract memory
+        last_llm_content = ext_message_arr_memory[-1].content
         lm_result_decompose, find_everything, find_nothing = read_markdown_and_extract_sections(
-            markdown_text=ext_message_arr_memory[-1].content,
+            markdown_text=last_llm_content,
             expected_sections=["current step", "previous instruction code", "relevant environment feedback", "next-step instruction code"],
             default_placeholder="❌ not available."
         )
 
-        return lm_result_decompose['next-step instruction code']
+        next_step_code = lm_result_decompose.get('next-step instruction code', '')
+        
+        # FIX: If parsing failed or got placeholder, fallback to raw content (like prepare_next_llm_context does)
+        # This ensures environment always receives valid content instead of placeholder
+        if find_nothing or not next_step_code or next_step_code.strip() == "" or "❌ not available" in next_step_code:
+            # Fallback: return raw LLM content (same as Linear_CMT.prepare_world_interaction)
+            # DEBUG (disabled)
+            # print_dict({
+            #     "DEBUG_MEMORY_PREPARE_WORLD_INTERACTION": {
+            #         "warning": "Markdown parsing failed, falling back to raw content",
+            #         "find_everything": find_everything,
+            #         "find_nothing": find_nothing,
+            #         "next_step_code_was": next_step_code[:200] if next_step_code else "EMPTY",
+            #         "fallback_to_raw": True,
+            #         "raw_content_preview": last_llm_content[:500] if last_llm_content else "EMPTY",
+            #     }
+            # }, mod='memory_debug')
+            return last_llm_content
+        
+        # DEBUG (disabled): Print what will be sent to environment
+        # print_dict({
+        #     "DEBUG_MEMORY_PREPARE_WORLD_INTERACTION": {
+        #         "find_everything": find_everything,
+        #         "find_nothing": find_nothing,
+        #         "next_step_instruction_code": next_step_code[:500] if next_step_code else "EMPTY",
+        #         "next_step_code_length": len(next_step_code) if next_step_code else 0,
+        #         "fallback_to_raw": False,
+        #     }
+        # }, mod='memory_debug')
+
+        return next_step_code
 
 
     def group_tokenize(self):
@@ -411,6 +484,32 @@ class MemoryCMT(MemoryCoreCMT):
             if index >= max_num_group:
                 print(f"Warning: group_tokenize only process first {max_num_group} groups, but got {len(self.grouped_steps)} groups")
                 break
+            # DEBUG (disabled): ensure reward is available for each group
+            if self.reward is None:
+                # print_dict(
+                #     {
+                #         "ERROR": "MemoryCMT.reward is None when building samples",
+                #         "minor_index_id": index,
+                #         "data_id": self.data_id,
+                #         "rollout_id": self.rollout_id,
+                #         "task_id": self.task_id,
+                #         "num_groups": len(self.grouped_steps),
+                #     },
+                #     mod="reward_debug_memory",
+                # )
+                reward_scores = None
+            else:
+                reward_scores = self.reward.model_dump()
+                # if index == 0:
+                #     print_dict({
+                #         "DEBUG_MEMORY_GROUP_TOKENIZE": {
+                #             "minor_index_id": index,
+                #             "reward_outcome": reward_scores.get("outcome", None),
+                #             "reward_success_rate": reward_scores.get("success_rate", None),
+                #             "reward_madness": reward_scores.get("madness", None),
+                #             "total_groups": len(self.grouped_steps),
+                #         }
+                #     }, mod='memory_debug')
             cmt_tokenized = self.tokenize_steps(ext_steps=ext_steps)  # ⭐ Tokenize the current group of steps
             sample = Sample(
                 data_id=self.data_id,
@@ -430,7 +529,7 @@ class MemoryCMT(MemoryCoreCMT):
                 position_ids=cmt_tokenized["position_ids"],
                 prompt_position_ids=cmt_tokenized["prompt_position_ids"],
                 response_position_ids=cmt_tokenized["response_position_ids"],
-                reward_scores=self.reward.model_dump(), # reward is duplicated in each sample
+                reward_scores=reward_scores, # reward is duplicated in each sample
                 max_prompt_len=self.config.data.max_prompt_length,
                 max_response_len=self.config.data.max_response_length,
                 max_model_len=self.config.data.max_response_length + self.config.data.max_prompt_length,

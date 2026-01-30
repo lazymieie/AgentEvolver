@@ -176,6 +176,8 @@ class HETDataParallelPPOActor(DataParallelPPOActor):
                     ##################
                     if entropy_coeff != 0:
                         entropy_loss = agg_loss(loss_mat=entropy, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)  # ⭐ Aggregate entropy loss
+                        metrics["actor/entropy_loss"] = entropy_loss.detach().item()
+                        metrics["actor/entropy_coeff"] = entropy_coeff
 
                         # compute policy loss
                         policy_loss = pg_loss - entropy_loss * entropy_coeff
@@ -200,12 +202,15 @@ class HETDataParallelPPOActor(DataParallelPPOActor):
                     loss.backward()  # ⭐ Backpropagate the loss
 
                     ##################
-                    # ANNI TODO: add metric
+                    # ANNI: add comprehensive metrics for training monitoring
                     data = {
+                        "actor/policy_loss": policy_loss.detach().item(),
                         "actor/pg_loss": pg_loss.detach().item(),
+                        "actor/on_pg_loss": on_pg_loss.detach().item(),
+                        "actor/off_pg_loss": off_pg_loss.detach().item(),
                         "actor/on_pg_clipfrac": on_pg_clipfrac.detach().item(),
-                        "actor/ppo_kl": ppo_kl.detach().item(),
                         "actor/on_pg_clipfrac_lower": on_pg_clipfrac_lower.detach().item(),
+                        "actor/ppo_kl": ppo_kl.detach().item(),
                     }
                     ##################
                     append_to_dict(metrics, data)

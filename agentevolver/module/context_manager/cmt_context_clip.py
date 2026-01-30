@@ -4,6 +4,7 @@ import re
 import json
 import random
 import time
+import os
 from typing import List, Callable
 from agentevolver.schema.trajectory import Sample
 from best_logger import print_dict, print_listofdict
@@ -11,47 +12,82 @@ from agentevolver.module.context_manager.cmt_linear_think import ExtendedMessage
 from agentevolver.module.context_manager.cmt_linear import find_sublist_indices, replace_token_ids
 from best_logger import register_logger, print_dict, print_nested, NestedJsonItem, SeqItem
 from textwrap import dedent
-from openai import OpenAI
+from openai import AzureOpenAI
 from loguru import logger
 
 
 def construct_alien_llm_chat_fn(config, rollout_config):
+    """Construct alien LLM chat function using Azure OpenAI"""
     def alien_llm_chat_fn(messages, request_id=""):
         max_try = 4
-        alien_model_name = config.actor_rollout_ref.rollout.context_template_alien_llm_model
-        alien_model_response_length = config.actor_rollout_ref.rollout.context_template_alien_model_response_length
-        regular_key_list = ["sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"]
-        backup_key_list = ["sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"]
+        
+        # Get Azure OpenAI configuration from config or environment variables
+        azure_api_key = getattr(
+            config.actor_rollout_ref.rollout, 
+            'context_template_alien_llm_api_key', 
+            None
+        ) or os.getenv("AZURE_OPENAI_API_KEY")
+        
+        azure_endpoint = getattr(
+            config.actor_rollout_ref.rollout,
+            'context_template_alien_llm_endpoint',
+            None
+        ) or os.getenv("AZURE_OPENAI_ENDPOINT")
+        
+        azure_api_version = getattr(
+            config.actor_rollout_ref.rollout,
+            'context_template_alien_llm_api_version',
+            None
+        ) or os.getenv("AZURE_OPENAI_API_VERSION") or os.getenv("OPENAI_API_VERSION") or "2024-12-01-preview"
+        
+        # Deployment name (model name in Azure OpenAI)
+        alien_model_name = getattr(
+            config.actor_rollout_ref.rollout,
+            'context_template_alien_llm_model',
+            None
+        ) or os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME") or "gpt-4o-2"
+        
+        alien_model_response_length = getattr(
+            config.actor_rollout_ref.rollout,
+            'context_template_alien_model_response_length',
+            2048
+        )
+        
+        if not azure_api_key:
+            raise ValueError("Missing Azure OpenAI API key. Set AZURE_OPENAI_API_KEY or context_template_alien_llm_api_key in config.")
+        if not azure_endpoint:
+            raise ValueError("Missing Azure OpenAI endpoint. Set AZURE_OPENAI_ENDPOINT or context_template_alien_llm_endpoint in config.")
+        
+        # Normalize endpoint (remove trailing slash)
+        azure_endpoint = azure_endpoint.rstrip("/")
+        
         for n_try in range(max_try):
             try:
-                if n_try < max_try // 2:
-                    api_key=random.choice(regular_key_list)
-                elif n_try == max_try // 2:
-                    api_key=random.choice(backup_key_list)
-                else:
-                    api_key=random.choice(regular_key_list + backup_key_list)
-                client = OpenAI(
-                    api_key=api_key,
-                    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+                client = AzureOpenAI(
+                    api_key=azure_api_key,
+                    azure_endpoint=azure_endpoint,
+                    api_version=azure_api_version,
                 )
-                sampling_params = dict(
-                    n=1,
-                    max_completion_tokens=alien_model_response_length,
-                )
-                sampling_params["temperature"] = 0
+                
                 completion = client.chat.completions.create(
-                    model=alien_model_name,
+                    model=alien_model_name,  # This is the deployment name in Azure OpenAI
                     messages=messages,
-                    extra_body=sampling_params
+                    temperature=0,
+                    max_tokens=alien_model_response_length,
                 )
+                
                 message = completion.choices[0].message.model_dump(exclude_unset=True, exclude_none=True)
-                if "content" not in message: message["content"] = ""
+                if "content" not in message: 
+                    message["content"] = ""
                 return {"role": message["role"], "content": message['content']}
             except Exception as e:
-                logger.bind(exception=True).exception(f"Error calling alien llm: {e}")
-                time.sleep(5)
-                print(f"Error calling alien llm: {e}, retrying...")
-        raise RuntimeError(f"Failed to get response from alien llm after {max_try} attempts")
+                logger.bind(exception=True).exception(f"Error calling Azure OpenAI alien llm: {e}")
+                if n_try < max_try - 1:
+                    time.sleep(5)
+                    print(f"Error calling Azure OpenAI alien llm: {e}, retrying... ({n_try + 1}/{max_try})")
+                else:
+                    raise
+        raise RuntimeError(f"Failed to get response from Azure OpenAI alien llm after {max_try} attempts")
     return alien_llm_chat_fn
 
 
@@ -61,6 +97,8 @@ class SelfContextClipCMT(LinearThinkCMT):
     """
 
     def __init__(self, config, tokenizer, llm_chat_fn):
+        super().__init__(config, tokenizer)
+        self.current_step = 0
         self.llm_chat_fn = llm_chat_fn
         self.alien_llm_chat_fn: Callable = construct_alien_llm_chat_fn(config, config.actor_rollout_ref.rollout)
         self.latest_env_response_id = ""
@@ -231,8 +269,23 @@ class SelfContextClipCMT(LinearThinkCMT):
             else:
                 raise RuntimeError(f"Unknown author {ext_msg.author} in latest_llm_interaction_socket")
 
-        listofdict_context = self.to_role_content(self.latest_llm_interaction_socket)  # ⭐ Convert the processed context to a list of dictionaries
-        return listofdict_context
+        # 内部 latest_llm_interaction_socket 保留带 AR/ER 标签，供 alien_llm 做剪枝使用。
+        # 但在喂给本地模型时，去掉这些标签头，避免模型学习到无用格式。
+        cleaned_messages = []
+        tag_pattern_assistant = re.compile(
+            r'^\[Assistant Response, id=AR\d+\]\s*---\s*', flags=re.MULTILINE
+        )
+        tag_pattern_env = re.compile(
+            r'^\[Environment Response, id=ER\d+\]\s*---\s*', flags=re.MULTILINE
+        )
+        for ext_msg in self.latest_llm_interaction_socket:
+            content = ext_msg.content_for_future.strip()
+            # 只清理最前面的标签，不动正文其它部分
+            content = tag_pattern_assistant.sub('', content, count=1)
+            content = tag_pattern_env.sub('', content, count=1)
+            cleaned_messages.append({"role": ext_msg.role, "content": content})
+
+        return cleaned_messages
 
 
     def save_init_input(self, init_input_arr:list, add_nothink):

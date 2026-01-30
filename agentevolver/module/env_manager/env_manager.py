@@ -303,7 +303,7 @@ class ParallelEnvManager(object):
                         agent_flow.artifact_recorder = self.artifact_recorder
                         agent_flow.exp_worker.artifact_recorder = self.artifact_recorder
 
-                    env_worker = EnvWorker(task=task, thread_index=thread_index, config=self.config, tokenizer=self.tokenizer)
+                    env_worker = EnvWorker(task=task, thread_index=thread_index, config=self.config, tokenizer=self.tokenizer,llm_chat_fn=llm_chat_fn,)
                     trajectory: Trajectory = env_worker.execute(data_id=data_id, rollout_id=rollout_id, traj_exp_config=traj_exp_config, agent_flow=agent_flow, tmux=tmux, stop=stop) # ⭐ Execute the task and generate the trajectory
                     return trajectory
 

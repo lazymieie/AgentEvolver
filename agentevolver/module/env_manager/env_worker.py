@@ -9,15 +9,16 @@ from agentevolver.schema.task import Task
 from agentevolver.schema.trajectory import Trajectory
 from agentevolver.module.context_manager.cmt_linear import Linear_CMT, ExtendedMessage
 from agentevolver.module.context_manager.cmt_linear_think import LinearThinkCMT
+from agentevolver.module.context_manager.cmt_memory_new import MemoryNewCMT
 from agentevolver.module.context_manager.cmt_context_clip import SelfContextClipCMT
 from agentevolver.module.exp_manager.exp_manager import TrajExpConfig
 from typing import List, Dict, Any, Optional
-
+from typing import Optional, Callable, List, Dict, Any
 
 class EnvWorker(object):
 
     def __init__(self, task: Task, instance_id: str = None, thread_index: int = None, tokenizer=None,
-                 config: DictConfig = None):
+                 config: DictConfig = None, llm_chat_fn: Optional[Callable] = None,):
         """
         Initializes the EnvWorker with the provided task, configuration, and other optional parameters.
 
@@ -37,6 +38,7 @@ class EnvWorker(object):
         self.instance_id: str = instance_id if instance_id is not None else uuid.uuid4().hex  # Set or generate the instance ID
         self.thread_index: int = thread_index  # Set the thread index
         self.tokenizer = tokenizer  # Store the tokenizer
+        self.llm_chat_fn: Optional[Callable] = llm_chat_fn
     def execute(self, data_id: str, rollout_id: str, traj_exp_config: TrajExpConfig, agent_flow: BaseAgentFlow, tmux:dict,stop:list[bool], system_prompt: Optional[str] = None, **kwargs) -> Trajectory:
         """
         Executes the task in the environment, generates a trajectory, and returns it.
@@ -96,6 +98,8 @@ class EnvWorker(object):
                 traj_cmt: LinearThinkCMT = LinearThinkCMT(self.config, self.tokenizer)
             elif self.config.actor_rollout_ref.rollout.context_template == "context_selfclip":
                 traj_cmt: SelfContextClipCMT = SelfContextClipCMT(self.config, self.tokenizer, self.llm_chat_fn)
+            elif self.config.actor_rollout_ref.rollout.context_template == "memory":
+                traj_cmt: MemoryNewCMT = MemoryNewCMT(self.config, self.tokenizer, self.llm_chat_fn)
             else:
                 raise ValueError(f"Unsupported context template: {self.config.actor_rollout_ref.rollout.context_template}")
 

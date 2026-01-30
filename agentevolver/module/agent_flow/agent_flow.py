@@ -45,6 +45,44 @@ class AgentFlow(BaseAgentFlow):
         # artifact_recorder will be set from trainer if available
         self.exp_worker.artifact_recorder = None
 
+    def _log_raw_conversation(self, task_id: str, traj_id: str = ""):
+        """
+        统一记录「未经过 tokenizer 的原始对话轨迹」，适用于所有 CMT。
+
+        优先使用各 CMT 的 prepare_previous_context(mod='raw')，
+        若不存在则尝试从 full_context 中恢复。
+        """
+        try:
+            # 优先走统一接口
+            if hasattr(self.cmt, "prepare_previous_context"):
+                raw_messages = self.cmt.prepare_previous_context(mod="raw")
+            # 兜底：从 full_context 里取 ExtendedMessage.content
+            elif hasattr(self.cmt, "full_context"):
+                raw_messages = [
+                    {"role": m.role, "content": m.content}
+                    for m in getattr(self.cmt, "full_context", [])
+                ]
+            else:
+                raw_messages = []
+
+            if not raw_messages:
+                return
+
+            # DEBUG 日志已关闭：如果需要再次查看原始对话，可恢复下面的打印。
+            # header = f"Raw conversation task {task_id}"
+            # if traj_id:
+            #     header += f", traj {traj_id}"
+            #
+            # print_listofdict(
+            #     raw_messages,
+            #     header=header,
+            #     mod="conversation_raw",
+            #     narrow=False,
+            # )
+        except Exception as e:
+            import logging
+            logging.warning(f"Failed to log raw conversation for task {task_id}: {e}")
+
 
     def execute(self, context_manager, init_messages: List[dict], env: EnvClient, instance_id: str, tmux, stop, thread_index, task_id, traj_exp_config,data_id="", rollout_id="", query="", **kwargs) -> Linear_CMT:
         """
@@ -106,6 +144,10 @@ class AgentFlow(BaseAgentFlow):
             is_safe: bool = self.cmt.check_context_token_num_safe(step_input_message_arr)  # ⭐ Check if the context token count is safe
             if not is_safe:
                 logger.warning(f"Token overflow detected at step {act_step}. Current token count exceeds the limit.")
+                print(
+                f"[OVERFLOW] task_id={task_id}, step={act_step}, "
+                )
+
                 self.cmt.is_terminated = False # trajectory not finished.
                 break
             # print("debug：act_step")
@@ -122,11 +164,35 @@ class AgentFlow(BaseAgentFlow):
 
             # 7. 🌍 world interaction
             try:
-                env_output = env.step(instance_id, {"content": self.cmt.prepare_world_interaction(), "role": "assistant"})  # ⭐ Interact with the environment
+                world_interaction_content = self.cmt.prepare_world_interaction()
+                # DEBUG (disabled): Print what is being sent to environment
+                # if hasattr(self.cmt, '__class__') and 'Memory' in self.cmt.__class__.__name__:
+                #     print_dict({
+                #         "DEBUG_AGENTFLOW_ENV_STEP": {
+                #             "step": act_step,
+                #             "content_to_env": world_interaction_content[:500] if world_interaction_content else "EMPTY",
+                #             "content_length": len(world_interaction_content) if world_interaction_content else 0,
+                #             "content_is_empty": not world_interaction_content or world_interaction_content.strip() == "",
+                #         }
+                #     }, mod='memory_debug')
+                env_output = env.step(instance_id, {"content": world_interaction_content, "role": "assistant"})  # ⭐ Interact with the environment
                 assert len(env_output['state'])==1
                 env_output["state"] = env_output["state"][0]
                 if env_output["state"]["role"] == "tool":
                     env_output["state"] = convert_tool_to_user_message(env_output["state"], self.tokenizer, format="qwen")
+                
+                # DEBUG (disabled): Print env response and reward info
+                # if hasattr(self.cmt, '__class__') and 'Memory' in self.cmt.__class__.__name__:
+                #     print_dict({
+                #         "DEBUG_AGENTFLOW_ENV_RESPONSE": {
+                #             "step": act_step,
+                #             "env_state_role": env_output["state"].get("role", "unknown"),
+                #             "env_state_content_preview": env_output["state"].get("content", "")[:300] if env_output["state"].get("content") else "EMPTY",
+                #             "is_terminated": env_output.get("is_terminated", False),
+                #             "env_reward": env_output.get("reward", None),
+                #         }
+                #     }, mod='memory_debug')
+                
                 if self.console_debug_mode:
                     print_listofdict(
                         step_input_message_arr +
@@ -160,18 +226,61 @@ class AgentFlow(BaseAgentFlow):
             grader_res = self._reward_calculator.calculate_reward(self.cmt, env, instance_id)  # ⭐ Calculate the reward using the reward calculator
             score = grader_res["score"] 
             reason = grader_res["reason"] or "No reason provided."
+            # DEBUG (disabled): trace reward when using external grader
+            # print_dict(
+            #     {
+            #         "mode": "reward_calculator",
+            #         "score": float(score),
+            #         "reason": reason,
+            #         "task_id": task_id,
+            #         "context_template": getattr(self.config.actor_rollout_ref.rollout, "context_template", "unknown"),
+            #     },
+            #     mod="reward_debug",
+            # )
         else:
             score = env.evaluate(instance_id, params={"sparse": self.sparse})  # ⭐ Evaluate the score from the environment
             reason = "Outcome 1 = success, 0 = failure."
+            # DEBUG (disabled): trace reward when using env.evaluate
+            # print_dict(
+            #     {
+            #         "mode": "env_evaluate",
+            #         "score": float(score),
+            #         "reason": reason,
+            #         "task_id": task_id,
+            #         "context_template": getattr(self.config.actor_rollout_ref.rollout, "context_template", "unknown"),
+            #     },
+            #     mod="reward_debug",
+            # )
 
         if score >= 1: success_rate = 1.0
         else: success_rate = 0.0
 
         self.cmt.reward = Reward(outcome=score, success_rate=success_rate, madness=self.cmt.compute_madness(), description=reason)  # ⭐ Set the reward for the context
         self.cmt.reward = self.cmt.reward_patch(self.cmt.reward)
+        
+        # DEBUG (disabled): Final reward assignment
+        # print_dict({
+        #     "DEBUG_AGENTFLOW_FINAL_REWARD": {
+        #         "task_id": task_id,
+        #         "raw_score": float(score),
+        #         "success_rate": float(success_rate),
+        #         "madness": float(self.cmt.reward.madness),
+        #         "final_outcome": float(self.cmt.reward.outcome),
+        #         "description": reason,
+        #         "context_template": getattr(self.config.actor_rollout_ref.rollout, "context_template", "unknown"),
+        #         "num_groups": len(self.cmt.grouped_steps) if hasattr(self.cmt, 'grouped_steps') else 0,
+        #         "is_terminated": self.cmt.is_terminated,
+        #     }
+        # }, mod='memory_debug')
+        
         self.cmt.remove_last_context()
 
         # Record rollout
+        traj_id = f"{data_id}_{rollout_id}" if data_id and rollout_id else f"{task_id}_unknown"
+
+        # 统一记录原始对话轨迹（所有 CMT 通用，包含 linear / linear_think / context_selfclip / memory 等）
+        # self._log_raw_conversation(task_id=task_id, traj_id=traj_id)
+
         if hasattr(self, 'artifact_recorder') and self.artifact_recorder and self.artifact_recorder.enable:
             try:
                 # Extract steps from CMT
@@ -191,7 +300,6 @@ class AgentFlow(BaseAgentFlow):
                 if hasattr(traj_exp_config, 'add_exp') and traj_exp_config.add_exp:
                     mode = "mixed"
                 
-                traj_id = f"{data_id}_{rollout_id}" if data_id and rollout_id else f"{task_id}_unknown"
                 self.artifact_recorder.write_rollouts(
                     task_id=task_id,
                     traj_id=traj_id,
