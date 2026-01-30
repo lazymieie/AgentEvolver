@@ -23,18 +23,17 @@
 
 PROJECT_DIR="$(pwd)"
 CONFIG_PATH="$PROJECT_DIR/config"
-env_url=http://localhost:8011
+env_url=http://localhost:8080
 em_url=http://localhost:8001
 current_time=$(date "+%Y%m%d_%H%M%S")
-log_file="logs/run_trian_qwen3vl4b/log_${current_time}.log"
+log_file="logs/run_trian_qwen3vl4b_task/log_${current_time}.log"
 export HF_HUB_DISABLE_TELEMETRY=1
 export HF_HUB_DISABLE_SYMLINKS_WARNING=1
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export RAY_DISABLE_DASHBOARD=1
-#设置合成任务优势衰减
-export DEBUG_ARG="synth_decay"
+#用来生成任务
 
 python3 -m agentevolver.main_ppo \
     --config-path="$CONFIG_PATH" \
@@ -77,8 +76,8 @@ python3 -m agentevolver.main_ppo \
     actor_rollout_ref.rollout.use_qwen3=True \
     actor_rollout_ref.rollout.enable_request_id=False \
     actor_rollout_ref.rollout.prompt_length=20480 \
-    actor_rollout_ref.rollout.response_length=6096 \
-    actor_rollout_ref.rollout.max_model_len=27580 \
+    actor_rollout_ref.rollout.response_length=17480 \
+    actor_rollout_ref.rollout.max_model_len=64000 \
     actor_rollout_ref.rollout.temperature=0.9 \
     actor_rollout_ref.model.path=/vepfs-cnbj3fa964354bf4/gjx/AgentEvolver/model/Qwen/Qwen3-VL-4B-Instruct \
     actor_rollout_ref.actor.optim.lr=1e-6 \
