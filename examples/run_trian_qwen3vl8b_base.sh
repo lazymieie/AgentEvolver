@@ -18,22 +18,34 @@
 #   vector_store.default.backend=local \
 #   op.rerank_memory_op.params.enable_llm_rerank=false
 
+#  qwen3vl 8b 训练 任务用100条 验证800条 经验池800条 
 
 # ---- Start Training ----
+export CUDA_HOME=/usr/local/cuda
+export PATH=$CUDA_HOME/bin:$PATH
+export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+
+export CC=/usr/bin/gcc
+export CXX=/usr/bin/g++
+export CUDAHOSTCXX=/usr/bin/g++
+export NVCC_PREPEND_FLAGS="--compiler-bindir=/usr/bin"
+
+
+
 
 PROJECT_DIR="$(pwd)"
 CONFIG_PATH="$PROJECT_DIR/config"
-env_url=http://localhost:8080
-em_url=http://localhost:8001
+env_url=http://172.31.0.81:8012
+em_url=http://172.31.0.81:8001
 current_time=$(date "+%Y%m%d_%H%M%S")
-log_file="logs/run_trian_qwen3vl4b_task/log_${current_time}.log"
+log_file="logs/run_trian_qwen3vl8b_base/log_${current_time}.log"
 export HF_HUB_DISABLE_TELEMETRY=1
 export HF_HUB_DISABLE_SYMLINKS_WARNING=1
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export RAY_DISABLE_DASHBOARD=1
-#用来生成任务
+#设置合成任务优势衰减
 
 python3 -m agentevolver.main_ppo \
     --config-path="$CONFIG_PATH" \
@@ -45,13 +57,12 @@ python3 -m agentevolver.main_ppo \
     exp_manager.train_sample_mode="alldiscard" \
     exp_manager.train_sample_keepratio=0.0 \
     exp_manager.init_exp_before_training=True \
-    exp_manager.init_exp_only=True \
-    exp_manager.init_exp_use_train_data=True \
+    exp_manager.init_exp_only=False \
     exp_manager.reme.base_url=${em_url} \
-    exp_manager.reme.workspace_id="qwen3vl_bfcl_multi_turn_800" \
-    exp_manager.reme.enable_summarizer=False \
+    exp_manager.reme.workspace_id="bfcl_multiturn_800" \
+    exp_manager.reme.enable_summarizer=True \
     exp_manager.reme.enable_context_generator=True \
-    exp_manager.reme.updated_freq=0 \
+    exp_manager.reme.updated_freq=1 \
     exp_manager.reme.retrieve_top_k=5 \
     actor_rollout_ref.actor.off_cliprange_high=0.6 \
     attribution_driven_credit_assignment.enable=True \
@@ -60,7 +71,7 @@ python3 -m agentevolver.main_ppo \
     attribution_driven_credit_assignment.llm_evaluation_log_dir="experiments/tech_synthetic/${experiment_name}/llm_evaluation_logs" \
     attribution_driven_credit_assignment.adca_grpo.alpha=0.2 \
     attribution_driven_credit_assignment.adca_grpo.skip_type='skip_small_adv' \
-    attribution_driven_credit_assignment.adca_grpo.prm_steps=20 \
+    attribution_driven_credit_assignment.adca_grpo.prm_steps=120 \
     attribution_driven_credit_assignment.adca_grpo.equal_trajectory_weight=true \
     attribution_driven_credit_assignment.evaluation_type='api' \
     attribution_driven_credit_assignment.consistent_scale=1.0 \
@@ -70,21 +81,21 @@ python3 -m agentevolver.main_ppo \
     algorithm.adv_estimator=grpo \
     data.train_batch_size=32 \
     data.max_prompt_length=6000 \
-    data.max_response_length=21580 \
+    data.max_response_length=23480 \
     data.filter_overlong_prompts=True \
     data.truncation='left' \
     data.return_raw_chat=True \
     actor_rollout_ref.rollout.use_qwen3=True \
     actor_rollout_ref.rollout.enable_request_id=False \
-    actor_rollout_ref.rollout.prompt_length=20480 \
+    actor_rollout_ref.rollout.prompt_length=12000 \
     actor_rollout_ref.rollout.response_length=17480 \
-    actor_rollout_ref.rollout.max_model_len=64000 \
+    actor_rollout_ref.rollout.max_model_len=29480 \
     actor_rollout_ref.rollout.temperature=0.9 \
-    actor_rollout_ref.model.path=/vepfs-cnbj3fa964354bf4/gjx/AgentEvolver/model/Qwen/Qwen3-VL-4B-Instruct \
+    actor_rollout_ref.model.path=/vepfs-cnbj3fa964354bf4/gjx/AgentEvolver/model/Qwen/Qwen3-VL-8B-Instruct \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
-    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
-    actor_rollout_ref.actor.ppo_mini_batch_size=16 \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=8 \
     actor_rollout_ref.actor.use_kl_loss=True \
     actor_rollout_ref.actor.kl_loss_coef=0.001 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
@@ -92,6 +103,7 @@ python3 -m agentevolver.main_ppo \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
+    actor_rollout_ref.rollout.context_template='linear' \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
@@ -104,25 +116,25 @@ python3 -m agentevolver.main_ppo \
     trainer.n_gpus_per_node=8 \
     trainer.critic_warmup=0 \
     trainer.logger="['tensorboard','console']" \
-    trainer.project_name="bfcl_qwen3-vl-4b" \
-    trainer.experiment_name="bfcl_multiturn_train_qwen3-vl-4b_agentevolver_task" \
-    trainer.nnodes=1 \
+    trainer.project_name="bfcl_qwen3-vl-8b" \
+    trainer.experiment_name="train_multibase_qwen3-vl-8b" \
+    trainer.nnodes=4 \
     trainer.save_freq=10 \
     trainer.test_freq=10 \
     trainer.total_epochs=40 \
     trainer.val_before_train=False \
-    trainer.validation_data_dir="experiments/tech_synthetic/${experiment_name}/validation_log" \
-    trainer.rollout_data_dir="experiments/tech_synthetic/${experiment_name}/rollout_log" \
-    actor_rollout_ref.actor.ppo_max_token_len_per_gpu=27580 \
-    actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=27580 \
-    actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=27580 \
-    critic.ppo_max_token_len_per_gpu=27580 \
-    critic.forward_max_token_len_per_gpu=27580 \
+    trainer.validation_data_dir="experiments/tech_synthetic/train_multibase_qwen3-vl-8b/validation_log" \
+    trainer.rollout_data_dir="experiments/tech_synthetic/train_multibase_qwen3-vl-8b/rollout_log" \
+    actor_rollout_ref.actor.ppo_max_token_len_per_gpu=29480 \
+    actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=29480 \
+    actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=29480 \
+    critic.ppo_max_token_len_per_gpu=29480 \
+    critic.forward_max_token_len_per_gpu=29480 \
     data.train_files=null \
     data.val_files=null \
     env_service.env_type=bfcl \
-    task_manager.n=80 \
-    task_manager.mixture.synthetic_data_ratio=0.5 \
+    task_manager.n=8 \
+    task_manager.mixture.synthetic_data_ratio=0.125 \
     task_manager.mixture.use_original_tasks=False \
     task_manager.grader.synthetic_grader=llm-binary-gt-no_constraint \
     actor_rollout_ref.rollout.val_kwargs.n=8 \
