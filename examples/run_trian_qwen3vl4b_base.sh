@@ -132,7 +132,7 @@ python3 -m agentevolver.main_ppo \
     data.train_files=null \
     data.val_files=null \
     env_service.env_type=bfcl \
-    task_manager.n=8 \
+    task_manager.n=80 \
     task_manager.mixture.synthetic_data_ratio=1 \
     task_manager.mixture.use_original_tasks=False \
     task_manager.grader.synthetic_grader=llm-binary-gt-no_constraint \

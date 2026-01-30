@@ -1032,9 +1032,6 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                         task_id=task_id,
                         query=query,
                         metadata=ei.get("metadata", {}),
-                        task_id=task_id,
-                        query=query,
-                        metadata=ei.get("metadata", {}),
                         env_type=self.config.env_service.env_type,
                         open_query=bool(open_query),
                     ))

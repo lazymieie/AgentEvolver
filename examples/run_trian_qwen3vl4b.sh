@@ -23,8 +23,8 @@
 
 PROJECT_DIR="$(pwd)"
 CONFIG_PATH="$PROJECT_DIR/config"
-env_url=http://localhost:8011
-em_url=http://localhost:8001
+env_url=http://172.31.0.81:8080
+em_url=http://172.31.0.81:8001
 current_time=$(date "+%Y%m%d_%H%M%S")
 log_file="logs/run_trian_qwen3vl4b/log_${current_time}.log"
 export HF_HUB_DISABLE_TELEMETRY=1

@@ -50,7 +50,6 @@ actor_rollout_ref:
       max_steps: 30
       tool_config_path: ""
       max_sample_per_task: 30
-      max_sample_per_task: 30
     custom_dataflow_cls:
       path: ""
       name: ""

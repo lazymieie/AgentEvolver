@@ -23,7 +23,7 @@
 
 PROJECT_DIR="$(pwd)"
 CONFIG_PATH="$PROJECT_DIR/config"
-env_url=http://localhost:8080
+env_url=http://localhost:8011
 em_url=http://localhost:8001
 current_time=$(date "+%Y%m%d_%H%M%S")
 log_file="logs/run_trian_qwen3vl4b_task/log_${current_time}.log"
@@ -47,7 +47,7 @@ python3 -m agentevolver.main_ppo \
     exp_manager.init_exp_before_training=False \
     exp_manager.init_exp_only=False \
     exp_manager.reme.base_url=${em_url} \
-    exp_manager.reme.workspace_id="qwen3vl_bfcl_multi_turn" \
+    exp_manager.reme.workspace_id="qwen3vl_bfcl_multi_turn_800" \
     exp_manager.reme.enable_summarizer=False \
     exp_manager.reme.enable_context_generator=True \
     exp_manager.reme.updated_freq=0 \
@@ -104,7 +104,7 @@ python3 -m agentevolver.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger="['tensorboard','console']" \
     trainer.project_name="bfcl_qwen3-vl-4b" \
-    trainer.experiment_name="bfcl_multiturn_train_qwen3-vl-4b_agentevolver" \
+    trainer.experiment_name="bfcl_multiturn_train_qwen3-vl-4b_agentevolver_task" \
     trainer.nnodes=1 \
     trainer.save_freq=10 \
     trainer.test_freq=10 \
