@@ -1049,8 +1049,6 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                 #     tasks = tasks[:debug_max_tasks]
 
                 # ---- rollout ----
-                        open_query=bool(open_query),
-                    ))
 
                 print("\n==================== DEBUG tasks ====================")
                 print("total tasks:", len(tasks))
