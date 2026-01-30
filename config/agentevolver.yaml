@@ -23,6 +23,9 @@ actor_rollout_ref:
     use_remove_padding: true
     enable_gradient_checkpointing: true
   rollout:
+    context_template_alien_llm_model : gpt-4o-2
+    context_template_clip_trigger_token_num : 20000
+    train_history_infer_token: false 
     use_qwen3: false                      
     enable_request_id: false
     prompt_length: 20480
@@ -46,6 +49,7 @@ actor_rollout_ref:
       format: llama3_json
       max_steps: 30
       tool_config_path: ""
+      max_sample_per_task: 30
     custom_dataflow_cls:
       path: ""
       name: ""
@@ -54,6 +58,7 @@ actor_rollout_ref:
     context_template_train_sp_action: false
     max_env_len: 4096
     sparse: true
+    force_think: false
   actor:
     # clip range high for off-policy samples
     off_cliprange_high: 0.6
