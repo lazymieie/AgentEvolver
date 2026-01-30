@@ -50,6 +50,7 @@ actor_rollout_ref:
       max_steps: 30
       tool_config_path: ""
       max_sample_per_task: 30
+      max_sample_per_task: 30
     custom_dataflow_cls:
       path: ""
       name: ""
@@ -122,7 +123,7 @@ thread_pool:
 
 task_manager:
   # tasks will be explored once if set. use it if you want to keep the same explorations.
-  train_data_path: tasks_explored.train.json
+  train_data_path: tasks_explored.train
   val_data_path: tasks_explored.val.json
   # model used to explore the environment
   llm_client: gpt-4o-2

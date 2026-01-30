@@ -849,13 +849,12 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
         total_r_other = 0
         total_n = 0
 
-
+        # --- debug configs ---
+        # 每个 batch 只取前若干个 task 进行 rollout/debug
         debug_max_tasks = 10
 
 
-
         for i, test_data in enumerate(self.val_dataloader):
-
 
             test_batch = DataProto.from_single_dict(test_data)
 
@@ -903,9 +902,9 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                 print(f"type(extras): {type(extras)}")
                 print(f"len(extras): {len(extras) if extras is not None else 'None'}")
 
-                for j in range(min(len(extras), 5)):  # 只打前 5 个，防止刷屏
-                    ei = extras[j]
-                    print(f"\n[extras[{j}]]")
+                for i in range(min(len(extras), 5)):  # 只打前 5 个，防止刷屏
+                    ei = extras[i]
+                    print(f"\n[extras[{i}]]")
                     print(f"  type: {type(ei)}")
 
                     # numpy scalar
@@ -985,12 +984,71 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                     #     print("  ❌ ERROR: task_id is None")
                     # if query is None:
                     #     print(f"  ⚠️ WARNING: query is None for task_id={task_id}")
+                extras = test_gen_batch.non_tensor_batch["extras"]
+
+                print("\n==================== DEBUG extras ====================")
+                print("type(extras):", type(extras))
+                print("len(extras):", len(extras))
+
+                tasks = []
+
+                for i in range(len(extras)):
+                    raw_ei = extras[i]
+
+                    print(f"\n[extras[{i}]]")
+                    print("  raw type:", type(raw_ei))
+
+                    # numpy scalar -> python
+                    if isinstance(raw_ei, np.generic):
+                        raw_ei = raw_ei.item()
+                        print("  converted numpy scalar ->", type(raw_ei))
+
+                    # JSON string -> dict
+                    if isinstance(raw_ei, str):
+                        print("  raw str repr:", repr(raw_ei))
+                        try:
+                            ei = json.loads(raw_ei)
+                            print("  JSON parsed OK, keys:", ei.keys())
+                        except Exception as e:
+                            print("  JSON parse FAILED:", e)
+                            raise
+                    elif isinstance(raw_ei, dict):
+                        ei = raw_ei
+                        print("  raw is dict, keys:", ei.keys())
+                    else:
+                        raise TypeError(f"extras[{i}] unsupported type: {type(raw_ei)}")
+
+                    # 🔥 关键字段检查
+                    task_id = ei.get("task_id")
+                    query = ei.get("new_query")
+                    open_query = ei.get("open_query", False)
+
+                    # if task_id is None:
+                    #     print("  ❌ ERROR: task_id is None")
+                    # if query is None:
+                    #     print(f"  ⚠️ WARNING: query is None for task_id={task_id}")
 
                     tasks.append(Task(
                         task_id=task_id,
                         query=query,
                         metadata=ei.get("metadata", {}),
+                        task_id=task_id,
+                        query=query,
+                        metadata=ei.get("metadata", {}),
                         env_type=self.config.env_service.env_type,
+                        open_query=bool(open_query),
+                    ))
+
+                print("\n==================== DEBUG tasks ====================")
+                print("total tasks:", len(tasks))
+                print("example task:", tasks[0].task_id, tasks[0].query)
+
+                # # 只用前 debug_max_tasks 个 task 做 rollout
+                # if len(tasks) > debug_max_tasks:
+                #     print(f"[VAL-DEBUG] truncate tasks: total={len(tasks)} -> use={debug_max_tasks}")
+                #     tasks = tasks[:debug_max_tasks]
+
+                # ---- rollout ----
                         open_query=bool(open_query),
                     ))
 
@@ -1019,6 +1077,7 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                 self.async_rollout_manager.sleep()
 
 
+
             # unpad
             # test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
             print("validation generation end")
@@ -1033,6 +1092,10 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
             output_ids = test_output_gen_batch.batch["responses"]
             output_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in output_ids]
             sample_outputs.extend(output_texts)
+
+
+
+
 
 
 
@@ -1095,7 +1158,7 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
 
             # 针对样本级别打印（只打印前 debug_max_tasks 条，避免刷屏）
             for j, (inp, out, sc) in enumerate(zip(input_texts, output_texts, scores)):
-                if j >= 3:
+                if j >= debug_max_tasks:
                     break
 
                 print(f"\n[VAL-DEBUG] sample (batch={i}, idx={j})")
@@ -1125,6 +1188,12 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
 
             data_source_lst.append(test_batch.non_tensor_batch.get("data_source", ["unknown"] * reward_tensor.shape[0]))
 
+        print(
+            f"\n[VAL][SUMMARY] total_n={total_n}, "
+            f"r0={total_r0} ({total_r0/max(total_n,1):.3f}), "
+            f"r1={total_r1} ({total_r1/max(total_n,1):.3f}), "
+            f"other={total_r_other} ({total_r_other/max(total_n,1):.3f})\n"
+        )
         print(
             f"\n[VAL][SUMMARY] total_n={total_n}, "
             f"r0={total_r0} ({total_r0/max(total_n,1):.3f}), "
@@ -1621,7 +1690,7 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
 
                             # 用规范化后的 extras 覆盖原始 extras
                             gen_batch.non_tensor_batch["extras"] = normalized_extras
-                            # 在创建 tasks 后添加调试输出
+                            
                             print(f"[DEBUG] Created {len(tasks)} tasks:")
                             for i, task in enumerate(tasks):
                                 print(f"  Task {i}: task_id={task.task_id}, query={task.query}, metadata={task.metadata},ground_truth={task.ground_truth}")
@@ -1855,14 +1924,17 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                             metrics.update(adca_metrics)
                         # ==================== End ADCA GRPO ====================
                         # Apply decay factor of 0.5 to non_tensor_batch['extras'][i]['evaluator'] != 'env'
+                        # 待改
                         if os.environ.get("DEBUG_ARG","").find("synth_decay")!=-1:
                             if epoch==0 and i==0:
                                 print("DEBUG: change ratio of synthetic data from 1 to 0.5")
                             assert 'extras' in batch.non_tensor_batch
                             if 'extras' in batch.non_tensor_batch:
                                 for i in range(len(batch.non_tensor_batch['extras'])):
-                                    assert 'evaluator' in batch.non_tensor_batch['extras'][i]
-                                    evaluator = batch.non_tensor_batch['extras'][i]['evaluator']
+                                    print("extras keys:", batch.non_tensor_batch["original_extras"][i])
+                                    print("extras:", batch.non_tensor_batch["original_extras"][i])
+                                    assert 'evaluator' in batch.non_tensor_batch['original_extras'][i]
+                                    evaluator = batch.non_tensor_batch['original_extras'][i]['evaluator']
                                     if evaluator != 'env':
                                         batch.batch["advantages"][i] *= 0.5  # ⭐ Apply decay factor to synthetic data
 
