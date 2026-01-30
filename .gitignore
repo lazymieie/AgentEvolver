@@ -168,3 +168,4 @@ local_vector_store/
 # checkpoints / temp
 *.checkpoint.json
 *.checkpoint.json.*
+*.md
