@@ -128,6 +128,7 @@ python3 -m agentevolver.main_ppo \
     trainer.val_before_train=False \
     trainer.validation_data_dir="/gemini/space/gjx/AgentEvolver/experiments/tech_synthetic/train_multibase_qwen3-vl-8b/validation_log" \
     trainer.rollout_data_dir="/gemini/space/gjx/AgentEvolver/experiments/tech_synthetic/train_multibase_qwen3-vl-8b/rollout_log" \
+    trainer.default_local_dir="/gemini/space/gjx/AgentEvolver/checkpoints/${trainer.project_name}/${trainer.experiment_name}" \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=65536 \
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=65536 \
     actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=65536 \
