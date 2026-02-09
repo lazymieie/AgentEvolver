@@ -16,6 +16,8 @@
 FSDP PPO Trainer with Ray-based single controller.
 This trainer supports model-agonistic model initialization with huggingface
 """
+import random
+import numpy as np
 
 import os
 import uuid
@@ -68,7 +70,93 @@ from agentevolver.module.adv_processor.adca_grpo_pipeline import apply_adca_grpo
 
 from agentevolver.module.exp_manager.exp_manager import ExperienceManager
 
+import random
+import math
 import time
+def filter_trajs_for_summary_only(
+    trajectories,
+    gen_batch_output=None,
+    thr=0.5,
+    keep_ratio=0.1,
+    seed=None,
+    debug=True,          # ⭐ 开关
+    debug_max=5,          # ⭐ 最多打印多少条样例
+):
+    succ, fail = [], []
+
+    # 统计用
+    stat = {
+        "no_reward": 0,
+        "nan_reward": 0,
+        "used_outcome": 0,
+    }
+
+    debug_cases = []
+
+    for idx, traj in enumerate(trajectories):
+        r = getattr(traj, "reward", None)
+
+        if r is None:
+            stat["no_reward"] += 1
+            fail.append(traj)
+            if debug and len(debug_cases) < debug_max:
+                debug_cases.append(
+                    ("no_reward", idx, getattr(traj, "rollout_id", None))
+                )
+            continue
+
+        try:
+            s = float(r.outcome)
+            stat["used_outcome"] += 1
+        except Exception as e:
+            stat["nan_reward"] += 1
+            fail.append(traj)
+            if debug and len(debug_cases) < debug_max:
+                debug_cases.append(
+                    ("bad_outcome", idx, getattr(traj, "rollout_id", None), repr(r))
+                )
+            continue
+
+        if math.isnan(s):
+            stat["nan_reward"] += 1
+            fail.append(traj)
+            if debug and len(debug_cases) < debug_max:
+                debug_cases.append(
+                    ("nan_outcome", idx, getattr(traj, "rollout_id", None), s)
+                )
+            continue
+
+        if traj.metadata is None:
+            traj.metadata = {}
+        traj.metadata["reward_score"] = s
+        traj.metadata["reward_from"] = "trajectory.reward.outcome"
+
+        if s > thr:
+            succ.append(traj)
+        else:
+            fail.append(traj)
+
+    if seed is not None:
+        random.seed(seed)
+    k = int(len(fail) * keep_ratio)
+    kept_fail = random.sample(fail, k) if k > 0 else []
+
+    filtered = succ + kept_fail
+
+    # ===== 汇总日志 =====
+    print(
+        f"[summary_filter] total={len(trajectories)} "
+        f"succ={len(succ)} fail={len(fail)} kept_succ={len(kept_fail)} "
+        f"no_reward={stat['no_reward']} nan_reward={stat['nan_reward']}"
+    )
+
+    # ===== Debug 细节 =====
+    if debug and debug_cases:
+        print("[summary_filter][debug] sample cases:")
+        for item in debug_cases:
+            print("  ", item)
+
+    return filtered
 
 def parse_reward_from_dataproto(data: DataProto, return_dict=False) -> dict | torch.Tensor:
     """
@@ -154,6 +242,9 @@ def union_gen_batch_via_task_id(tasks, batch: DataProto, gen_batch_output: DataP
     batch_final = batch_extend.union(gen_batch_output)  # ⭐ Merge the selected part of the batch with the gen_batch_output
     return batch_final
 
+from collections import defaultdict
+import torch
+import numpy as np
 
 def compute_grpo_outcome_advantage(
     token_level_rewards: torch.Tensor,
@@ -165,37 +256,25 @@ def compute_grpo_outcome_advantage(
     """
     Compute advantage for GRPO, operating only on Outcome reward
     (with only one scalar reward for each response).
-
-    Args:
-        token_level_rewards: `(torch.Tensor)`
-            shape is (bs, response_length)
-        response_mask: `(torch.Tensor)`
-            shape is (bs, response_length)
-        norm_adv_by_std_in_grpo: (bool)
-            whether to scale the GRPO advantage.
-            If True, the advantage is scaled by the std, as in the original GRPO.
-            If False, the advantage is not scaled, as in Dr.GRPO (https://arxiv.org/abs/2503.20783).
-
-    Returns:
-        advantages: `(torch.Tensor)`
-            shape is (bs, response_length)
-        Returns: `(torch.Tensor)`
-            shape is (bs, response_length)
     """
+
     scores = token_level_rewards.sum(dim=-1)
 
     id2score = defaultdict(list)
     id2mean = {}
     id2std = {}
 
-    if scores.dim()!=1:
+    if scores.dim() != 1:
         logger.warning("scores.dim()!=1")
 
     with torch.no_grad():
         bsz = scores.shape[0]
-        
+
+        # ===== grouping =====
         for i in range(bsz):
             id2score[index[i]].append(scores[i])
+
+        # ===== stats (原逻辑不改) =====
         for idx in id2score:
             if len(id2score[idx]) == 1:
                 id2mean[idx] = torch.tensor(0.0)
@@ -205,17 +284,141 @@ def compute_grpo_outcome_advantage(
                 id2std[idx] = torch.std(torch.tensor([id2score[idx]]))
             else:
                 raise ValueError(f"no score in prompt index: {idx}")
+
+        # ===== DEBUG: 写入 adv.log（不影响原逻辑；失败也不打断训练）=====
+        try:
+            log_path = "/gemini/space/gjx/AgentEvolver/adv.log"
+            with open(log_path, "a") as f:
+                f.write("\n" + "=" * 80 + "\n")
+                f.write("compute_grpo_outcome_advantage\n")
+
+                # reward & scores
+                f.write(
+                    f"[reward] token_level_rewards: "
+                    f"min={token_level_rewards.min().item():.6f}, "
+                    f"max={token_level_rewards.max().item():.6f}, "
+                    f"mean={token_level_rewards.mean().item():.6f}\n"
+                )
+                f.write(
+                    f"[score] scores(sum): "
+                    f"min={scores.min().item():.6f}, "
+                    f"max={scores.max().item():.6f}, "
+                    f"mean={scores.mean().item():.6f}\n"
+                )
+
+                # group sizes
+                f.write(
+                    "[group] group_sizes="
+                    + str({k: len(v) for k, v in id2score.items()})
+                    + "\n"
+                )
+
+                # per-group mean/std
+                for idx in id2score:
+                    vals = id2score[idx]
+                    f.write(
+                        f"[stat] idx={idx} "
+                        f"n={len(vals)} "
+                        f"scores={[v.item() for v in vals]} "
+                        f"mean={id2mean[idx].item():.6f} "
+                        f"std={id2std[idx].item():.6f}\n"
+                    )
+        except Exception as e:
+            # 不让 debug 影响训练
+            logger.warning(f"[adv.log] write failed: {e}")
+
+        # ===== norm (原逻辑不改) =====
+        scores_before = scores.clone()
         for i in range(bsz):
             if norm_adv_by_std_in_grpo:
                 scores[i] = (scores[i] - id2mean[index[i]]) / (id2std[index[i]] + epsilon)
             else:
                 scores[i] = scores[i] - id2mean[index[i]]
-                # no std
-                # if llm judge output similar rewards for undistinguishable samples, we may want to reduce its weight according to the batch std
-                # scores[i] = scores[i] / (batch_std + epsilon)
+        # ===== DEBUG: norm 前后 + mask + final adv =====
+        try:
+            with open("adv.log", "a") as f:
+                f.write(f"[norm] before={scores_before.tolist()}\n")
+                f.write(f"[norm] after ={scores.tolist()}\n")
+                f.write(f"[mask] response_mask_sum={response_mask.sum(dim=-1).tolist()}\n")
+
+                adv_tmp = scores.unsqueeze(-1) * response_mask
+                f.write(
+                    f"[adv] min={adv_tmp.min().item():.6f} "
+                    f"max={adv_tmp.max().item():.6f} "
+                    f"mean={adv_tmp.mean().item():.6f} "
+                    f"nonzero_ratio={((adv_tmp.abs() > 1e-8).float().mean().item()):.6f}\n"
+                )
+        except Exception as e:
+            logger.warning(f"[adv.log] write failed: {e}")
+
+        # ===== 原返回 (原逻辑不改) =====
         scores = scores.unsqueeze(-1) * response_mask
 
     return scores, scores
+
+
+
+# def compute_grpo_outcome_advantage(
+#     token_level_rewards: torch.Tensor,
+#     response_mask: torch.Tensor,
+#     index: np.ndarray,
+#     epsilon: float = 1e-6,
+#     norm_adv_by_std_in_grpo: bool = True,
+# ):
+#     """
+#     Compute advantage for GRPO, operating only on Outcome reward
+#     (with only one scalar reward for each response).
+
+#     Args:
+#         token_level_rewards: `(torch.Tensor)`
+#             shape is (bs, response_length)
+#         response_mask: `(torch.Tensor)`
+#             shape is (bs, response_length)
+#         norm_adv_by_std_in_grpo: (bool)
+#             whether to scale the GRPO advantage.
+#             If True, the advantage is scaled by the std, as in the original GRPO.
+#             If False, the advantage is not scaled, as in Dr.GRPO (https://arxiv.org/abs/2503.20783).
+
+#     Returns:
+#         advantages: `(torch.Tensor)`
+#             shape is (bs, response_length)
+#         Returns: `(torch.Tensor)`
+#             shape is (bs, response_length)
+#     """
+#     scores = token_level_rewards.sum(dim=-1)
+
+#     id2score = defaultdict(list)
+#     id2mean = {}
+#     id2std = {}
+
+#     if scores.dim()!=1:
+#         logger.warning("scores.dim()!=1")
+
+#     with torch.no_grad():
+#         bsz = scores.shape[0]
+        
+#         for i in range(bsz):
+#             id2score[index[i]].append(scores[i])
+#         for idx in id2score:
+#             if len(id2score[idx]) == 1:
+#                 id2mean[idx] = torch.tensor(0.0)
+#                 id2std[idx] = torch.tensor(1.0)
+#             elif len(id2score[idx]) > 1:
+#                 id2mean[idx] = torch.mean(torch.tensor(id2score[idx]))
+#                 id2std[idx] = torch.std(torch.tensor([id2score[idx]]))
+#             else:
+#                 raise ValueError(f"no score in prompt index: {idx}")
+#         for i in range(bsz):
+#             if norm_adv_by_std_in_grpo:
+#                 scores[i] = (scores[i] - id2mean[index[i]]) / (id2std[index[i]] + epsilon)
+#             else:
+#                 scores[i] = scores[i] - id2mean[index[i]]
+#                 # no std
+#                 # if llm judge output similar rewards for undistinguishable samples, we may want to reduce its weight according to the batch std
+#                 # scores[i] = scores[i] / (batch_std + epsilon)
+#         scores = scores.unsqueeze(-1) * response_mask
+
+#     return scores, scores
 
 
 
@@ -1486,6 +1689,9 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
         print("=" * 80 + "\n")
         
         return stats
+    
+
+    
 
     def fit(self):
         """
@@ -1787,8 +1993,16 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
 
                     batch.batch["response_mask"] = compute_response_mask(batch)  # ⭐ Compute and add response mask to the batch
 
+                    filtered_trajectories = filter_trajs_for_summary_only(
+                                                trajectories=trajectories,
+                                                gen_batch_output=gen_batch_output,
+                                                thr=0.5,
+                                                keep_ratio=0.5,
+                                                seed=self.global_steps,
+                                            )
+
                     # update experience pool
-                    summary_task = self.exp_manager.submit_summary_task(trajectories, self.global_steps)
+                    summary_task = self.exp_manager.submit_summary_task(filtered_trajectories, self.global_steps)
 
 
                     # balance the number of valid tokens on each dp rank.
@@ -1950,9 +2164,17 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                         metrics.update(actor_output_metrics)
                     
                     # collect summary tasks
-                    if summary_task is not None:
-                        time_cost = self.exp_manager.collect_summary_result(summary_task)
-                        metrics.update({"exp_manager/summary": time_cost})
+                    # if summary_task is not None:
+                    #     time_cost = self.exp_manager.collect_summary_result(summary_task)
+                    #     metrics.update({"exp_manager/summary": time_cost})
+                    time_cost = self.exp_manager.collect_summary_result(
+                        summary_task,
+                        timeout=300.0,
+                    )
+                    if time_cost is not None:
+                        metrics.update({"exp_manager/summary_sum_time": time_cost})
+                    # 你也可以记录 wall time：把上面函数里 wall 返回/存出来
+
 
 
                     # Log rollout generations if enabled

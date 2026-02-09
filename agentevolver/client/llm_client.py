@@ -91,18 +91,55 @@ class DashScopeClient:
     ) -> Generator[str, None, None]:
         return self.chat_stream_with_retry(messages, **sampling_params)
 
+    # def chat_completion(
+    #     self,
+    #     messages: list[dict[str, str]],
+    #     stream: bool = False,
+    #     **kwargs,
+    # ) -> str | Generator[str, None, None]:
+    #     url = (
+    #         f"{self.endpoint}/openai/deployments/{self.model_name}/chat/completions"
+    #         f"?api-version={self.api_version}"
+    #     )
+
+    #     # ✅ Azure chat/completions 不支持的参数过滤
+    #     UNSUPPORTED = {
+    #         "top_k",
+    #         "min_p",
+    #         "typical_p",
+    #         "tfs_z",
+    #         "mirostat",
+    #         "mirostat_tau",
+    #         "mirostat_eta",
+    #     }
+    #     for k in list(kwargs.keys()):
+    #         if k in UNSUPPORTED:
+    #             kwargs.pop(k, None)
+
+    #     params = {
+    #         "messages": messages,
+    #         "temperature": kwargs.pop("temperature", self.temperature),
+    #         "max_tokens": kwargs.pop("max_tokens", self.max_tokens),
+    #         "stream": stream,
+    #         **kwargs,
+    #     }
+
+    #     if stream:
+    #         return self._handle_stream_response(url, params)
+    #     else:
+    #         return self._handle_normal_response(url, params)
     def chat_completion(
         self,
         messages: list[dict[str, str]],
         stream: bool = False,
         **kwargs,
     ) -> str | Generator[str, None, None]:
-        url = (
-            f"{self.endpoint}/openai/deployments/{self.model_name}/chat/completions"
-            f"?api-version={self.api_version}"
-        )
+        # ✅ LiteLLM / OpenAI-compatible endpoint should be like:
+        #   http://222.80.214.7:20594/v1
+        endpoint = self.endpoint.rstrip("/")
+        url = f"{endpoint}/chat/completions"
 
-        # ✅ Azure chat/completions 不支持的参数过滤
+        # ✅ 过滤你不想传的参数（可保留）
         UNSUPPORTED = {
             "top_k",
             "min_p",
@@ -117,6 +154,7 @@ class DashScopeClient:
                 kwargs.pop(k, None)
 
         params = {
+            "model": self.model_name,  # ⭐ OpenAI-compatible 需要 model 放 body
             "messages": messages,
             "temperature": kwargs.pop("temperature", self.temperature),
             "max_tokens": kwargs.pop("max_tokens", self.max_tokens),
@@ -128,6 +166,7 @@ class DashScopeClient:
             return self._handle_stream_response(url, params)
         else:
             return self._handle_normal_response(url, params)
+
 
     # -------------------------
     # backoff helpers

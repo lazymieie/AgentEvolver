@@ -17,7 +17,7 @@ import threading
 from dataclasses import dataclass, asdict
 import random
 from agentevolver.module.adv_processor.prompt import build_batch_adv_evaluation_prompt, build_batch_reward_evaluation_prompt, get_positive_mask, THRESHOLD, rescale_score
-
+from openai import AsyncOpenAI
 __all__ = [
     "evaluate_step_flags_parallel",
     "ParallelSemanticProcessor",
@@ -110,35 +110,149 @@ def parse_batch_evaluation_result(response: str, num_steps: int):
         return [flag == "GOOD" for flag in flags[:num_steps]]
     raise ValueError("Could not parse evaluation result")
 
+# def _get_overall_advantage(advantages_tensor, mask=None):
+#     """
+#     Extracts the overall advantage value from the given advantages tensor, optionally using a mask to filter elements.
+
+#     Args:
+#         advantages_tensor (torch.Tensor): The tensor containing advantage values.
+#         mask (torch.Tensor, optional): A boolean mask to filter the advantages tensor. Defaults to None.
+
+#     Returns:
+#         float: The overall advantage value, or 0.0 if no valid values are found.
+#     """
+#     if advantages_tensor.dim() == 0:
+#         return advantages_tensor.item()
+
+#     if advantages_tensor.dim() == 1:
+#         if mask is not None:
+#             valid_advantages = advantages_tensor[mask.bool()]
+#             if len(valid_advantages) > 0:
+#                 return valid_advantages[0].item()
+#             else:
+#                 return 0.0
+#         else:
+#             non_zero_mask = torch.abs(advantages_tensor) > 1e-8
+#             if non_zero_mask.any():
+#                 return advantages_tensor[non_zero_mask][0].item()
+#             else:
+#                 return 0.0
+
+#     raise ValueError(f"Unsupported advantages_tensor shape: {advantages_tensor.shape}")
+import torch
+import os
+
 def _get_overall_advantage(advantages_tensor, mask=None):
-    """
-    Extracts the overall advantage value from the given advantages tensor, optionally using a mask to filter elements.
+    log_path = "overall_advantage.log"
 
-    Args:
-        advantages_tensor (torch.Tensor): The tensor containing advantage values.
-        mask (torch.Tensor, optional): A boolean mask to filter the advantages tensor. Defaults to None.
+    try:
+        with open(log_path, "a") as f:
+            f.write("\n" + "=" * 80 + "\n")
+            f.write("_get_overall_advantage\n")
+            f.write(f"tensor_dim={advantages_tensor.dim()}\n")
+            f.write(f"tensor_shape={tuple(advantages_tensor.shape)}\n")
+    except Exception:
+        pass
 
-    Returns:
-        float: The overall advantage value, or 0.0 if no valid values are found.
-    """
+    # ===== scalar =====
     if advantages_tensor.dim() == 0:
-        return advantages_tensor.item()
+        val = advantages_tensor.item()
+        try:
+            with open(log_path, "a") as f:
+                f.write(f"[scalar] value={val:.6f}\n")
+        except Exception:
+            pass
+        return val
 
+    # ===== 1D tensor =====
     if advantages_tensor.dim() == 1:
         if mask is not None:
-            valid_advantages = advantages_tensor[mask.bool()]
-            if len(valid_advantages) > 0:
-                return valid_advantages[0].item()
+            m = mask.bool()
+
+            try:
+                with open(log_path, "a") as f:
+                    f.write(
+                        f"[mask] provided=True "
+                        f"mask_shape={tuple(mask.shape)} "
+                        f"mask_true_count={int(m.sum().item())}\n"
+                    )
+            except Exception:
+                pass
+
+            if m.any():
+                v = advantages_tensor[m]
+                med = v.median().item()
+
+                try:
+                    with open(log_path, "a") as f:
+                        f.write(
+                            f"[masked] "
+                            f"selected_len={v.numel()} "
+                            f"min={v.min().item():.6f} "
+                            f"max={v.max().item():.6f} "
+                            f"mean={v.mean().item():.6f} "
+                            f"median={med:.6f}\n"
+                        )
+                except Exception:
+                    pass
+
+                return med
             else:
-                return 0.0
-        else:
-            non_zero_mask = torch.abs(advantages_tensor) > 1e-8
-            if non_zero_mask.any():
-                return advantages_tensor[non_zero_mask][0].item()
-            else:
+                try:
+                    with open(log_path, "a") as f:
+                        f.write("[masked] no valid mask positions → return 0.0\n")
+                except Exception:
+                    pass
                 return 0.0
 
+        else:
+            nz = advantages_tensor.abs() > 1e-8
+
+            try:
+                with open(log_path, "a") as f:
+                    f.write(
+                        f"[mask] provided=False "
+                        f"nonzero_count={int(nz.sum().item())}\n"
+                    )
+            except Exception:
+                pass
+
+            if nz.any():
+                v = advantages_tensor[nz]
+                med = v.median().item()
+
+                try:
+                    with open(log_path, "a") as f:
+                        f.write(
+                            f"[nonzero] "
+                            f"selected_len={v.numel()} "
+                            f"min={v.min().item():.6f} "
+                            f"max={v.max().item():.6f} "
+                            f"mean={v.mean().item():.6f} "
+                            f"median={med:.6f}\n"
+                        )
+                except Exception:
+                    pass
+
+                return med
+            else:
+                try:
+                    with open(log_path, "a") as f:
+                        f.write("[nonzero] no nonzero entries → return 0.0\n")
+                except Exception:
+                    pass
+                return 0.0
+
+    # ===== unsupported =====
+    try:
+        with open(log_path, "a") as f:
+            f.write(f"[error] unsupported shape: {tuple(advantages_tensor.shape)}\n")
+    except Exception:
+        pass
+
     raise ValueError(f"Unsupported advantages_tensor shape: {advantages_tensor.shape}")
+
+
 
 def _save_evaluation_record(record: EvaluationRecord, save_dir: Optional[str] = None):
     """
@@ -184,7 +298,7 @@ def _save_evaluation_record(record: EvaluationRecord, save_dir: Optional[str] = 
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(record_dict, f, ensure_ascii=False, indent=2)
 
-        print(f"[record_save] ✅ Saved sample {record.sample_idx} with {len(record.steps)} steps: {step_subdir}/{filename}")
+        # print(f"[record_save] ✅ Saved sample {record.sample_idx} with {len(record.steps)} steps: {step_subdir}/{filename}")
 
     except Exception as e:
         print(f"[record_save] ❌ FAILED to save evaluation record for sample {record.sample_idx}: {e}")
@@ -192,7 +306,7 @@ def _save_evaluation_record(record: EvaluationRecord, save_dir: Optional[str] = 
 
 
 async def _async_safe_query(
-    client: AsyncAzureOpenAI,
+    client: AsyncOpenAI,
     model: str,
     messages: list[dict],
     semaphore: asyncio.Semaphore,
@@ -321,7 +435,7 @@ async def _async_safe_query(
 
 
 async def _evaluate_single_sample_api(
-    client: AsyncAzureOpenAI,
+    client: AsyncOpenAI,
     model_name: str,
     task: EvaluationTask,
     semaphore: asyncio.Semaphore,
@@ -371,10 +485,10 @@ async def _evaluate_single_sample_api(
             step_results = parse_batch_evaluation_result(
                 llm_raw_output, len(task.steps)
             )
-            print(
-                f"[API] ✅ Sample {task.sample_idx}: Successfully parsed "
-                f"{len(step_results)} step results"
-            )
+            # print(
+            #     f"[API] ✅ Sample {task.sample_idx}: Successfully parsed "
+            #     f"{len(step_results)} step results"
+            # )
         except Exception as parse_error:
             # ——> Parsing failed: No rescaling (all use "no rescale" flag)
             print(
@@ -504,10 +618,10 @@ async def evaluate_step_flags_parallel(tokenizer, batch, overall_score_source: s
         f"[parallel_eval] Using Azure OpenAI: endpoint={azure_endpoint}, "
         f"deployment={azure_deployment_name}, api_version={azure_api_version}"
     )
-    api_client = AsyncAzureOpenAI(
-        api_key=azure_api_key,
-        azure_endpoint=azure_endpoint,
-        api_version=azure_api_version,
+
+    api_client = AsyncOpenAI(
+        base_url=os.getenv("OPENAI_BASE_URL").rstrip("/"),  # 必须是 http://host:port/v1
+        api_key=os.getenv("OPENAI_API_KEY", "anything"),    # LiteLLM 默认不校验
     )
     # Ensure downstream calls use the deployment name
     model_name = azure_deployment_name

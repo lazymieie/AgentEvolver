@@ -10,7 +10,9 @@ from concurrent.futures.thread import ThreadPoolExecutor
 from agentevolver.schema.task import Task
 from agentevolver.schema.trajectory import Trajectory
 from agentevolver.client.em_client import EMClient
-
+import time
+from concurrent.futures import Future
+from typing import Optional, List, Union
 
 @dataclass
 class TaskExpConfig:
@@ -87,31 +89,70 @@ class ExperienceManager(object):
         
         return
 
-    def submit_summary_task(self, trajectories: List[Trajectory], global_steps: int) -> Optional[Future]:
+    # def submit_summary_task(self, trajectories: List[Trajectory], global_steps: int) -> Optional[Future]:
+    #     """
+    #     Submits a summary task to the thread pool for asynchronous processing.
+
+    #     Args:
+    #         trajectories (List[Trajectory]): A list of trajectory objects to be summarized.
+    #         global_steps (int): The current global step count used to determine task submission timing.
+
+    #     Returns:
+    #         Optional[Future]: A Future object representing the submitted task, or None if the task
+    #                         should not be submitted or submission fails.
+    #     """
+    #     if not self._should_submit_summary(global_steps):
+    #         return None
+        
+    #     try:
+    #         summary_task = self.thread_pool.submit(
+    #             self.em_client.call_summarizer,
+    #             trajectories=trajectories,
+    #             workspace_id=self.reme_config.workspace_id
+    #         )
+    #         print(f"[Summary] Async task submitted at step {global_steps}")
+    #         return summary_task
+    #     except Exception as e:
+    #         print(f"[Summary] Failed to submit task: {e}")
+    #         return None
+    def submit_summary_task(self, trajectories: List[Trajectory], global_steps: int) -> Optional[List[Future]]:
         """
-        Submits a summary task to the thread pool for asynchronous processing.
+        Submits summary tasks to the thread pool for asynchronous processing in batches.
 
         Args:
             trajectories (List[Trajectory]): A list of trajectory objects to be summarized.
             global_steps (int): The current global step count used to determine task submission timing.
 
         Returns:
-            Optional[Future]: A Future object representing the submitted task, or None if the task
-                            should not be submitted or submission fails.
+            Optional[List[Future]]: A list of Future objects representing the submitted batch tasks, 
+                                   or None if the task should not be submitted or submission fails.
         """
         if not self._should_submit_summary(global_steps):
             return None
         
         try:
-            summary_task = self.thread_pool.submit(
-                self.em_client.call_summarizer,
-                trajectories=trajectories,
-                workspace_id=self.reme_config.workspace_id
-            )
-            print(f"[Summary] Async task submitted at step {global_steps}")
-            return summary_task
+            # Get batch size from config, default to 32 if not specified
+            batch_size = 8
+            
+            # Split trajectories into batches
+            task_futures = []
+            total_batches = (len(trajectories) + batch_size - 1) // batch_size  # Ceiling division
+            
+            for i in range(0, len(trajectories), batch_size):
+                batch = trajectories[i:i + batch_size]
+                batch_num = i // batch_size + 1
+                future = self.thread_pool.submit(
+                    self.em_client.call_summarizer,
+                    trajectories=batch,
+                    workspace_id=self.reme_config.workspace_id
+                )
+                task_futures.append(future)
+                print(f"[Summary] Batch {batch_num}/{total_batches} ({len(batch)} trajectories) submitted at step {global_steps}")
+            
+            print(f"[Summary] Total {total_batches} async batch tasks submitted at step {global_steps}")
+            return task_futures
         except Exception as e:
-            print(f"[Summary] Failed to submit task: {e}")
+            print(f"[Summary] Failed to submit tasks: {e}")
             return None
 
     def _should_submit_summary(self, global_steps: int) -> bool:
@@ -130,30 +171,105 @@ class ExperienceManager(object):
             and global_steps % self.reme_config.updated_freq == 0
         )
     
-
-    def collect_summary_result(self, summary_task: Optional[Future]) -> Optional[float]:
+    def collect_summary_result(
+        self,
+        summary_task: Optional[Union[List[Future], Future]],
+        timeout: Optional[float] = None,
+    ) -> Optional[float]:
         """
-        Collects the result from a submitted summary task.
+        Collects the result from submitted summary tasks, waiting for all batches to complete.
 
         Args:
-            summary_task (Optional[Future]): The Future object representing the summary task to collect.
-            timeout (Optional[float]): Maximum time in seconds to wait for the task completion.
-                                    Defaults to None (wait indefinitely).
+            summary_task:
+                - Optional[List[Future]]: list of batch futures
+                - Optional[Future]: a single future (backward compatibility)
+            timeout:
+                - Per-batch timeout in seconds for Future.result().
+                - If None, uses self.reme_config.summary_timeout if exists, else waits indefinitely.
 
         Returns:
-            Optional[float]: The time cost of the summary task in seconds, or None if the task
-                            is None, times out, or encounters an error.
+            Optional[float]:
+                Sum of time_cost reported by each completed batch (NOT wall clock time).
+                Returns None if all batches fail / timeout or summary_task is None.
         """
         if summary_task is None:
             return None
-        try:
-            print("[Summary] Waiting for task completion...")
-            summarizer_response, time_cost = summary_task.result()
-            print(f"[Summary] Task completed in {time_cost:.2f}s")
-            return time_cost
-        except Exception as e:
-            print(f"[Summary] Task failed: {e}")
+
+        # Backward compatibility: handle single Future
+        if isinstance(summary_task, Future):
+            summary_task = [summary_task]
+
+        if not summary_task:
             return None
+
+        # Default timeout from config if not provided
+        if timeout is None:
+            timeout = 300.0
+
+        num_tasks = len(summary_task)
+        print(f"[Summary] Waiting for {num_tasks} batch tasks to complete... (per-batch timeout={timeout})")
+
+        # Wall time measurement (how long we actually block this step)
+        wall_t0 = time.perf_counter()
+
+        total_time_cost = 0.0          # sum of per-batch time_cost
+        completed_count = 0
+        failed_count = 0
+        timeout_count = 0
+
+        for idx, task in enumerate(summary_task, 1):
+            try:
+                # Wait this batch (blocking). If timeout is None -> wait indefinitely.
+                summarizer_response, time_cost = task.result(timeout=timeout)
+                total_time_cost += float(time_cost)
+                completed_count += 1
+                print(f"[Summary] Batch {idx}/{num_tasks} completed in {float(time_cost):.2f}s")
+            except Exception as e:
+                # Distinguish timeout if it is a concurrent.futures.TimeoutError
+                # (avoid importing TimeoutError name clash with built-in)
+                if e.__class__.__name__ == "TimeoutError":
+                    timeout_count += 1
+                    print(f"[Summary] Batch {idx}/{num_tasks} timed out after {timeout}s")
+                else:
+                    failed_count += 1
+                    print(f"[Summary] Batch {idx}/{num_tasks} failed: {e}")
+
+        wall = time.perf_counter() - wall_t0
+        print(
+            f"[Summary] Done. completed={completed_count}/{num_tasks}, "
+            f"timeout={timeout_count}, failed={failed_count}, "
+            f"sum_time_cost={total_time_cost:.2f}s, wall={wall:.2f}s"
+        )
+
+        # If you want to log wall time somewhere, do it here, e.g.:
+        # self._last_summary_wall = wall
+
+        return total_time_cost if completed_count > 0 else None
+    
+
+    # def collect_summary_result(self, summary_task: Optional[Future]) -> Optional[float]:
+    #     """
+    #     Collects the result from a submitted summary task.
+
+    #     Args:
+    #         summary_task (Optional[Future]): The Future object representing the summary task to collect.
+    #         timeout (Optional[float]): Maximum time in seconds to wait for the task completion.
+    #                                 Defaults to None (wait indefinitely).
+
+    #     Returns:
+    #         Optional[float]: The time cost of the summary task in seconds, or None if the task
+    #                         is None, times out, or encounters an error.
+    #     """
+    #     if summary_task is None:
+    #         return None
+    #     try:
+    #         print("[Summary] Waiting for task completion...")
+    #         summarizer_response, time_cost = summary_task.result()
+    #         print(f"[Summary] Task completed in {time_cost:.2f}s")
+    #         return time_cost
+    #     except Exception as e:
+    #         print(f"[Summary] Task failed: {e}")
+    #         return None
 
     def get_complete_exp_configs(self, tasks: List[Task], mode: Literal["sample", "validate"]) -> List[TaskExpConfig]:
         """
