@@ -67,5 +67,7 @@ export PYTHONPATH="$PROJECT_ROOT:${PYTHONPATH:-}"
 echo "Current working directory: $(pwd)"
 echo "PYTHONPATH: $PYTHONPATH"
 
+# export RAY_ADDRESS="10.233.73.255:6379"
+# export RAY_DISABLE_IMPORT_WARNING=1
 # 运行 Python 命令
-exec python -m env_service.env_service --env bfcl --portal 0.0.0.0 --port 8012
+exec python -m env_service.env_service --env bfcl --portal 0.0.0.0 --port 8080

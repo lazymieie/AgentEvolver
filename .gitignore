@@ -162,10 +162,12 @@ tests/events.out.tfevents.*
 
 # local db / cache
 my_chroma_db/
-local_vector_store/
+# local_vector_store/
 *.sqlite3
 
 # checkpoints / temp
 *.checkpoint.json
 *.checkpoint.json.*
 *.md
+
+models/
