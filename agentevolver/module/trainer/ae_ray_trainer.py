@@ -1045,6 +1045,8 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
         sample_inputs = []
         sample_outputs = []
         sample_scores = []
+        # 用taskid进行区分
+        sample_task_ids = []
 
         # --- realtime reward stats ---
         total_r0 = 0
@@ -1304,6 +1306,15 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
             test_batch = union_gen_batch_via_task_id(tasks, test_batch, test_output_gen_batch)
             test_batch.meta_info["validate"] = True
 
+             # ✅ 收集当前 batch 的 task_id，用于后续按 task 级别进行 metrics 分组
+            batch_task_ids = test_batch.non_tensor_batch.get("task_ids", None)
+            if batch_task_ids is None:
+                raise KeyError("`task_ids` not found in test_batch.non_tensor_batch during validation; "
+                               "please ensure env_manager.to_dataproto() populates non_tensor_batch['task_ids'].")
+            # 转成 numpy 数组，保证后面 concat 时形状一致
+            sample_task_ids.append(np.asarray(batch_task_ids).astype(object))
+
+
             # test_batch = test_batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.val_kwargs.n, interleave=True)
             # test_batch = test_batch.union(test_output_gen_batch)
 
@@ -1416,8 +1427,16 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
             assert len(lst) == 0 or len(lst) == len(sample_scores), f"{key_info}: {len(lst)=}, {len(sample_scores)=}"
 
         data_sources = np.concatenate(data_source_lst, axis=0)
+        all_task_ids = np.concatenate(sample_task_ids, axis=0).astype(str)
+        assert len(all_task_ids) == len(sample_scores), \
+            f"len(all_task_ids)={len(all_task_ids)} != len(sample_scores)={len(sample_scores)}"
 
-        data_src2var2metric2val = process_validation_metrics(data_sources, sample_inputs, reward_extra_infos_dict)  # ⭐ Process the validation metrics for different data sources
+
+        data_src2var2metric2val = process_validation_metrics(
+            data_sources=data_sources,
+            sample_inputs=all_task_ids,
+            infos_dict=reward_extra_infos_dict,
+        )  # ⭐ Process the validation metrics for different data sources # ⭐ Process the validation metrics for different data sources
         metric_dict = {}
         for data_source, var2metric2val in data_src2var2metric2val.items():
             core_var = "acc" if "acc" in var2metric2val else "reward"
