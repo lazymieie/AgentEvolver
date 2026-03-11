@@ -17,7 +17,11 @@ from typing import (
     TypedDict,
     Unpack,
 )
+import os
 
+def get_env_str(key: str, default: str) -> str:
+    v = os.getenv(key)
+    return v.strip() if v and v.strip() else default
 import hydra
 from loguru import logger
 from omegaconf import DictConfig
@@ -97,7 +101,9 @@ class TaskManager(object):
         self._post_filter: list[TaskPostFilter] = [LlmFilter(env_service_url,llm_client,self._num_exploration_threads,tokenizer=tokenizer,config=config)]  # ⭐ Initialize the post filter
 
         self._tasks: list[Task]=[]
-        self._exploration_strategy._inject_deps(self._old_retrival,self._llm_client,DashScopeClient(model_name='gpt-4o-2',max_tokens=8192),env_profile=env_profile)  # ⭐ Inject dependencies into the exploration strategy
+        model_name = get_env_str("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o-2")  # 默认不变
+        max_tokens = int(os.getenv("AGENTEVOlVER_MAX_TOKENS", "8192"))  
+        self._exploration_strategy._inject_deps(self._old_retrival,self._llm_client,DashScopeClient(model_name=model_name,max_tokens=max_tokens),env_profile=env_profile)  # ⭐ Inject dependencies into the exploration strategy
 #gjx
     @property
     def seed_tasks(self):
@@ -316,7 +322,7 @@ class TaskManager(object):
 
 
         if resume_file is None:
-            resume_file = ".generate_task.checkpoint.json"
+            resume_file = "/gemini/space/gjx/AgentEvolver/.generate_task.checkpoint.json"
 
         # ✅ 只取前10个 tasks 来生成（你要的）
         # tasks = list(tasks)[:debug_limit_tasks]
@@ -350,14 +356,14 @@ class TaskManager(object):
 
         # we roll n times for each task
         task_q = list(copy.copy(tasks)) * self._n
-        # logger.warning(f"[DEBUG] task_q size = {len(task_q)} (len(tasks)={len(tasks)} * n={self._n})")
+        logger.warning(f"[DEBUG] task_q size = {len(task_q)} (len(tasks)={len(tasks)} * n={self._n})")
 
         parallel_num = min(self._num_exploration_threads, len(tasks))
         batch_indices = list(range(0, len(task_q), parallel_num))
-        # logger.warning(f"[DEBUG] parallel_num={parallel_num}, total_batches={len(batch_indices)}")
+        logger.warning(f"[DEBUG] parallel_num={parallel_num}, total_batches={len(batch_indices)}")
 
-        raw_path = os.path.abspath("task_objectives_raw.jsonl")
-        # logger.warning(f"[DEBUG] raw objective dump file = {raw_path}, cwd={os.getcwd()}")
+        raw_path = os.path.abspath("/gemini/space/gjx/AgentEvolver/task_objectives_raw.jsonl")
+        logger.warning(f"[DEBUG] raw objective dump file = {raw_path}, cwd={os.getcwd()}")
 
         with ThreadPoolExecutor(max_workers=self._num_exploration_threads) as pool:
             for batch_id, start_i in enumerate(tqdm(batch_indices, desc="generating tasks", disable=not show_progress)):

@@ -814,6 +814,15 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
         self.total_training_steps = total_training_steps
         print(f"Total training steps: {self.total_training_steps}")
 
+                # Calculate steps per epoch for accurate epoch tracking when resuming
+        if not isinstance(self.train_dataset, IterableDataset):
+            self.steps_per_epoch = len(self.train_dataloader)
+        else:
+            # For IterableDataset, estimate steps per epoch
+            self.steps_per_epoch = len(self.train_task_manager.seed_tasks) if hasattr(self.train_task_manager, 'seed_tasks') else 1
+        print(f"Steps per epoch: {self.steps_per_epoch}")
+
+
         try:
             OmegaConf.set_struct(self.config, True)
             with open_dict(self.config):
@@ -1045,7 +1054,7 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
         sample_inputs = []
         sample_outputs = []
         sample_scores = []
-        # 用taskid进行区分
+        # 用taskid进行区分 
         sample_task_ids = []
 
         # --- realtime reward stats ---
@@ -1059,7 +1068,7 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
         debug_max_tasks = 10
 
 
-        for i, test_data in enumerate(self.val_dataloader):
+        for test_i, test_data in enumerate(self.val_dataloader):
 
             test_batch = DataProto.from_single_dict(test_data)
 
@@ -1148,48 +1157,6 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
 
                 extras = test_gen_batch.non_tensor_batch["extras"]
 
-                print("\n==================== DEBUG extras ====================")
-                print("type(extras):", type(extras))
-                print("len(extras):", len(extras))
-
-                tasks = []
-
-                for i in range(len(extras)):
-                    raw_ei = extras[i]
-
-                    print(f"\n[extras[{i}]]")
-                    print("  raw type:", type(raw_ei))
-
-                    # numpy scalar -> python
-                    if isinstance(raw_ei, np.generic):
-                        raw_ei = raw_ei.item()
-                        print("  converted numpy scalar ->", type(raw_ei))
-
-                    # JSON string -> dict
-                    if isinstance(raw_ei, str):
-                        print("  raw str repr:", repr(raw_ei))
-                        try:
-                            ei = json.loads(raw_ei)
-                            print("  JSON parsed OK, keys:", ei.keys())
-                        except Exception as e:
-                            print("  JSON parse FAILED:", e)
-                            raise
-                    elif isinstance(raw_ei, dict):
-                        ei = raw_ei
-                        print("  raw is dict, keys:", ei.keys())
-                    else:
-                        raise TypeError(f"extras[{i}] unsupported type: {type(raw_ei)}")
-
-                    # 🔥 关键字段检查
-                    task_id = ei.get("task_id")
-                    query = ei.get("new_query")
-                    open_query = ei.get("open_query", False)
-
-                    # if task_id is None:
-                    #     print("  ❌ ERROR: task_id is None")
-                    # if query is None:
-                    #     print(f"  ⚠️ WARNING: query is None for task_id={task_id}")
-                extras = test_gen_batch.non_tensor_batch["extras"]
 
                 print("\n==================== DEBUG extras ====================")
                 print("type(extras):", type(extras))
@@ -1197,10 +1164,10 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
 
                 tasks = []
 
-                for i in range(len(extras)):
-                    raw_ei = extras[i]
+                for i1 in range(len(extras)):
+                    raw_ei = extras[i1]
 
-                    print(f"\n[extras[{i}]]")
+                    print(f"\n[extras[{i1}]]")
                     print("  raw type:", type(raw_ei))
 
                     # numpy scalar -> python
@@ -1251,17 +1218,6 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                 #     tasks = tasks[:debug_max_tasks]
 
                 # ---- rollout ----
-
-                print("\n==================== DEBUG tasks ====================")
-                print("total tasks:", len(tasks))
-                print("example task:", tasks[0].task_id, tasks[0].query)
-
-                # # 只用前 debug_max_tasks 个 task 做 rollout
-                # if len(tasks) > debug_max_tasks:
-                #     print(f"[VAL-DEBUG] truncate tasks: total={len(tasks)} -> use={debug_max_tasks}")
-                #     tasks = tasks[:debug_max_tasks]
-
-                # ---- rollout ----
                 task_exp_configs = self.exp_manager.get_complete_exp_configs(tasks, mode="validate")
 
                 print("=" * 10 + " start validate rollout " + "=" * 10)
@@ -1269,7 +1225,7 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                     tasks,
                     task_exp_configs,
                     mode="validate",
-                    epoch=f"test.1.{i}",
+                    epoch=f"test.1.{test_i}",
                 )
                 print("=" * 10 + " end validate rollout " + "=" * 10)
 
@@ -1934,7 +1890,13 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                             # TODO enable tracing by jinli 0619
                             print("=" * 10 + "start fit rollout" + "=" * 10)
                             rollout_start_time = time.time()
-                            trajectories = self.env_manager.rollout(tasks, task_exp_configs, mode="sample", epoch=f"train.{epoch}.{i1}")  # ⭐ Generate trajectories using the environment manager
+                            # trajectories = self.env_manager.rollout(tasks, task_exp_configs, mode="sample", epoch=f"train.{epoch}.{i1}")  # ⭐ Generate trajectories using the environment manager
+                              # Calculate actual epoch based on global_steps for accurate tracking when resuming
+                            actual_epoch_for_rollout = (self.global_steps - 1) // self.steps_per_epoch if self.steps_per_epoch > 0 else epoch
+                            trajectories = self.env_manager.rollout(tasks, task_exp_configs, mode="sample", epoch=f"train.{actual_epoch_for_rollout}.{i1}")  # ⭐ Generate trajectories using the environment manager
+                         
+                            
+                            
                             assert len(trajectories)>0, "{len(trajectories)=}?"
                             print("=" * 10 + "end fit rollout" + "=" * 10)
                             gen_batch_output = self.env_manager.to_dataproto(trajectories)
@@ -2235,11 +2197,15 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                         with _timer("save_checkpoint", timing_raw):
                             self._save_checkpoint()  # ⭐ Save the current state of the model as a checkpoint
 
+                 # Calculate actual epoch based on global_steps for accurate tracking when resuming
+                actual_epoch = (self.global_steps - 1) // self.steps_per_epoch if self.steps_per_epoch > 0 else epoch
+   
+
                 # training metrics
                 metrics.update(
                     {
                         "training/global_step": self.global_steps,
-                        "training/epoch": epoch,
+                        "training/epoch": actual_epoch,
                         "training/num_not_none_traj": num_not_none_traj,
                         "training/num_term_traj": num_term_traj
                     }
@@ -2253,6 +2219,8 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
 
                 # TODO: make a canonical logger that supports various backend
                 logger.log(data=metrics, step=self.global_steps)  # ⭐ Log the collected metrics
+
+                progress_bar.set_description(f"Training Progress (Epoch {actual_epoch}/{self.config.trainer.total_epochs-1}, Step {self.global_steps})")
 
                 progress_bar.update(1)
                 self.global_steps += 1

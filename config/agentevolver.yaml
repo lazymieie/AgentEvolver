@@ -104,8 +104,7 @@ trainer:
   save_freq: 10000
   test_freq: 10
   total_epochs: 1
-  #跳过
-  val_before_train: true
+  val_before_train: false
   validation_data_dir: "experiments/tech_synthetic/${trainer.experiment_name}/validation_log"
   rollout_data_dir: "experiments/tech_synthetic/${trainer.experiment_name}/rollout_log"
   val_only: false
@@ -122,7 +121,7 @@ thread_pool:
 
 task_manager:
   # tasks will be explored once if set. use it if you want to keep the same explorations.
-  train_data_path: tasks_explored.train
+  train_data_path: /gemini/space/gjx/AgentEvolver/tasks_explored.train
   val_data_path: tasks_explored.val.json
   # model used to explore the environment
   llm_client: gpt-4o-2
@@ -131,7 +130,7 @@ task_manager:
   # 0 - stop exploration
   n: 0
   # env profiles used in exploration. If you set n to 0, just ignore this.
-  env_profile: cookbook/env_profiles/appworld.json
+  env_profile: /gemini/space/gjx/AgentEvolver/cookbook/env_profiles/bfcl.json
   # batch size of dynamic synthetic data
   # this should be the same as train_batch_size
   bs: ${data.train_batch_size}

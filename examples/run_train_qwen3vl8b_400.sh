@@ -1,0 +1,150 @@
+# ---- Start Environment Service ----
+# conda activate appworld
+# bash env_service/launch_script/appworld.sh
+
+
+# ---- Start ReMe Service ----
+# conda activate reme
+# cd external/reme
+# reme \
+#   config=default \
+#   backend=http \
+#   thread_pool_max_workers=256 \
+#   http.host="127.0.0.1" \
+#   http.port=8001 \
+#   http.limit_concurrency=256 \
+#   llm.default.model_name=qwen-max-2025-01-25 \
+#   embedding_model.default.model_name=text-embedding-v4 \
+#   vector_store.default.backend=local \
+#   op.rerank_memory_op.params.enable_llm_rerank=false
+
+#  qwen3vl 8b 训练 任务用100条 验证800条 经验池800条 
+
+# ---- Start Training ----
+export CUDA_HOME=/usr/local/cuda
+export PATH=$CUDA_HOME/bin:$PATH
+export TRITON_PTXAS_PATH=/gemini/space/gjx/miniconda3/envs/agentevolver_qwen3vl/bin/ptxas
+
+export CC=/usr/bin/gcc
+export CXX=/usr/bin/g++
+export CUDAHOSTCXX=/usr/bin/g++
+export NVCC_PREPEND_FLAGS="--compiler-bindir=/usr/bin"
+
+
+# export https_proxy=10.127.45.11:3128
+# export http_proxy=10.127.45.11:3128
+
+# export NO_PROXY="localhost,127.0.0.1,10.0.199.46,10.0.240.156"
+# export no_proxy="$NO_PROXY"
+
+
+PROJECT_DIR="$(pwd)"
+# CONFIG_PATH="$PROJECT_DIR/config"
+CONFIG_PATH="/gemini/space/gjx/AgentEvolver/config"
+env_url=http://10.233.4.180:8080
+em_url=http://10.233.15.130:8001
+current_time=$(date "+%Y%m%d_%H%M%S")
+log_file="/gemini/space/gjx/AgentEvolver/logs/run_trian_qwen3vl8b_base/log_${current_time}.log"
+export HF_HUB_DISABLE_TELEMETRY=1
+export HF_HUB_DISABLE_SYMLINKS_WARNING=1
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
+export RAY_DISABLE_DASHBOARD=1
+#设置合成任务优势衰减
+
+python3 -m agentevolver.main_ppo \
+    --config-path="$CONFIG_PATH" \
+    --config-name='script_config' \
+    env_service.env_url=$env_url \
+    exp_manager.val_rollout_mode="woexp" \
+    exp_manager.train_rollout_mode="mixed" \
+    exp_manager.rollout_ratio=0.5 \
+    exp_manager.train_sample_mode="alldiscard" \
+    exp_manager.train_sample_keepratio=0.0 \
+    exp_manager.init_exp_before_training=False \
+    exp_manager.init_exp_only=False \
+    exp_manager.reme.base_url=${em_url} \
+    exp_manager.reme.workspace_id="bfcl_multiturn_800" \
+    exp_manager.reme.enable_summarizer=False \
+    exp_manager.reme.enable_context_generator=True \
+    exp_manager.reme.updated_freq=0 \
+    exp_manager.reme.retrieve_top_k=5 \
+    actor_rollout_ref.actor.off_cliprange_high=0.6 \
+    attribution_driven_credit_assignment.enable=True \
+    attribution_driven_credit_assignment.adca_grpo.enable_adca_metric=true \
+    attribution_driven_credit_assignment.adca_grpo.prm_scheme='decouple' \
+    attribution_driven_credit_assignment.llm_evaluation_log_dir="/gemini/space/gjx/AgentEvolver/experiments/tech_synthetic/train_multibase_qwen3-vl-8b/llm_evaluation_logs" \
+    attribution_driven_credit_assignment.adca_grpo.alpha=0.2 \
+    attribution_driven_credit_assignment.adca_grpo.prm_steps=120 \
+    attribution_driven_credit_assignment.adca_grpo.equal_trajectory_weight=true \
+    attribution_driven_credit_assignment.evaluation_type='api' \
+    attribution_driven_credit_assignment.consistent_scale=1.0 \
+    attribution_driven_credit_assignment.pos_unconsistent_scale=0.2 \
+    attribution_driven_credit_assignment.neg_unconsistent_scale=0.2 \
+    attribution_driven_credit_assignment.model='gpt-4o-2' \
+    algorithm.adv_estimator=grpo \
+    data.train_batch_size=32 \
+    data.max_prompt_length=17480 \
+    data.max_response_length=48056 \
+    data.filter_overlong_prompts=True \
+    data.truncation='left' \
+    data.return_raw_chat=True \
+    actor_rollout_ref.rollout.use_qwen3=True \
+    actor_rollout_ref.rollout.enable_request_id=False \
+    actor_rollout_ref.rollout.prompt_length=48056 \
+    actor_rollout_ref.rollout.response_length=17480 \
+    actor_rollout_ref.rollout.max_model_len=65536 \
+    actor_rollout_ref.rollout.temperature=0.9 \
+    actor_rollout_ref.model.path=/gemini/space/gjx/AgentEvolver/models/models/Qwen/Qwen3-VL-8B-Instruct \
+    actor_rollout_ref.actor.optim.lr=1e-6 \
+    actor_rollout_ref.model.use_remove_padding=True \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=4 \
+    actor_rollout_ref.actor.use_kl_loss=True \
+    actor_rollout_ref.actor.kl_loss_coef=0.001 \
+    actor_rollout_ref.actor.kl_loss_type=low_var_kl \
+    actor_rollout_ref.actor.entropy_coeff=0 \
+    actor_rollout_ref.model.enable_gradient_checkpointing=True \
+    actor_rollout_ref.actor.fsdp_config.param_offload=False \
+    actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
+    actor_rollout_ref.rollout.context_template='linear' \
+    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
+    actor_rollout_ref.rollout.name=vllm \
+    actor_rollout_ref.rollout.mode=async \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
+    actor_rollout_ref.rollout.n=8 \
+    actor_rollout_ref.rollout.max_env_worker=64 \
+    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
+    actor_rollout_ref.ref.fsdp_config.param_offload=True \
+    algorithm.use_kl_in_reward=False \
+    trainer.n_gpus_per_node=8 \
+    trainer.critic_warmup=0 \
+    trainer.logger="['tensorboard','console']" \
+    trainer.project_name="bfcl_qwen3-vl-8b" \
+    trainer.experiment_name="train_multibase_qwen3-vl-8b" \
+    trainer.nnodes=2 \
+    trainer.save_freq=10 \
+    trainer.test_freq=10 \
+    trainer.total_epochs=40 \
+    trainer.val_before_train=False \
+    trainer.validation_data_dir="/gemini/space/gjx/AgentEvolver/experiments/tech_synthetic/train_multibase_qwen3-vl-8b/validation_log" \
+    trainer.rollout_data_dir="/gemini/space/gjx/AgentEvolver/experiments/tech_synthetic/train_multibase_qwen3-vl-8b/rollout_log" \
+    trainer.default_local_dir="/gemini/space/gjx/AgentEvolver/checkpoints/bfcl_qwen3-vl-8b/train_multibase_qwen3-vl-8b" \
+    actor_rollout_ref.actor.ppo_max_token_len_per_gpu=65536 \
+    actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=65536 \
+    actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=65536 \
+    critic.ppo_max_token_len_per_gpu=65536 \
+    critic.forward_max_token_len_per_gpu=65536 \
+    data.train_files=null \
+    data.val_files=null \
+    env_service.env_type=bfcl \
+    task_manager.n=8 \
+    task_manager.mixture.synthetic_data_ratio=9 \
+    task_manager.mixture.use_original_tasks=False \
+    task_manager.grader.synthetic_grader=llm-binary-gt-no_constraint \
+    task_manager.train_data_path=/gemini/space/gjx/AgentEvolver/tasks_explored_400.train \
+    actor_rollout_ref.rollout.val_kwargs.n=8 \
+    debug_artifacts.enable=true\
+    2>&1 | tee "$log_file" \
