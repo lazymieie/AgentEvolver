@@ -20,12 +20,12 @@ export PYTHONPATH="$BEYONDAGENT_DIR:$PYTHONPATH"
 
 
 # 3. Conda 环境创建
-if ! conda info --envs | grep -w "bfcl" &>/dev/null; then
-    echo "🐍 创建 Conda 环境 bfcl（Python 3.11.13）..."
-    conda create -n bfcl python=3.11.13 -y
-else
-    echo "⚠️ Conda 环境 bfcl 已存在，请删除或修改。（本次已跳过创建）。"
-fi
+# if ! conda info --envs | grep -w "bfcl" &>/dev/null; then
+#     echo "🐍 创建 Conda 环境 bfcl（Python 3.11.13）..."
+#     conda create -n bfcl python=3.11.13 -y
+# else
+#     echo "⚠️ Conda 环境 bfcl 已存在，请删除或修改。（本次已跳过创建）。"
+# fi
 
 # # 4. 安装依赖
 # if [ -d "$SCRIPT_DIR/gorilla" ]; then
@@ -50,7 +50,7 @@ cd "$SCRIPT_DIR/"
 echo "当前工作目录: $(pwd)"
 echo "脚本目录: $SCRIPT_DIR"
 
-conda run -n bfcl python "$SCRIPT_DIR/bfcl_dataprocess.py"
+python "$SCRIPT_DIR/bfcl_dataprocess_copy.py"
 
 # 6. 设置环境变量
 echo "🌎 设置环境变量..."

@@ -19,8 +19,8 @@ DEFAULT_BFCL_ENV_DIR="$ENV_SERVICE_DIR/environments/bfcl"
 BFCL_ENV_DIR=${BFCL_ENV_DIR:-$DEFAULT_BFCL_ENV_DIR}
 
 export ENV_PATH="$BFCL_ENV_DIR"
-export BFCL_DATA_PATH="$BFCL_ENV_DIR/bfcl_data/multi_turn_base_processed.jsonl"
-export BFCL_SPLID_ID_PATH="$BFCL_ENV_DIR/bfcl_data/multi_turn_base_split_ids.json"
+export BFCL_DATA_PATH="$BFCL_ENV_DIR/bfcl_data/multi_turn_processed.jsonl"
+export BFCL_SPLID_ID_PATH="$BFCL_ENV_DIR/bfcl_data/multi_turn_split_ids.json"
 export BFCL_ANSWER_PATH="$BFCL_ENV_DIR/bfcl_eval/possible_answer"
 
 echo "🌍 环境变量设置完成:"
@@ -68,4 +68,4 @@ echo "Current working directory: $(pwd)"
 echo "PYTHONPATH: $PYTHONPATH"
 
 # 运行 Python 命令
-exec python -m env_service.env_service --env bfcl --portal 0.0.0.0 --port 8080
+exec python -m env_service.env_service --env bfcl --portal 0.0.0.0 --port 8080 --debug true
