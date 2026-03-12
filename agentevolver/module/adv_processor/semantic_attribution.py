@@ -57,6 +57,54 @@ class EvaluationRecord:
     evaluation_type: str
     global_step: Optional[int] = None
     epoch: Optional[str] = None
+    task_id: Optional[str] = None
+    rollout_id: Optional[str] = None
+    used_experience: Optional[bool] = None
+    experience_list: Optional[List[str]] = None
+
+
+def _extract_sample_experience_info(batch, sample_idx: int) -> Dict[str, object]:
+    """Extract task/rollout/experience metadata for one sample from DataProto.non_tensor_batch."""
+    info = {
+        "task_id": None,
+        "rollout_id": None,
+        "used_experience": False,
+        "experience_list": [],
+    }
+
+    try:
+        def _sanitize_filename(value: Optional[str], default: str = "unknown_task") -> str:
+            text = str(value).strip() if value is not None else ""
+            if not text:
+                text = default
+            return re.sub(r'[<>:"/\\|?*\s]+', "_", text)[:200]
+        task_ids = batch.non_tensor_batch.get("task_ids")
+        if task_ids is not None and sample_idx < len(task_ids):
+            info["task_id"] = str(task_ids[sample_idx])
+    except Exception:
+        pass
+
+    try:
+        rollout_ids = batch.non_tensor_batch.get("rollout_ids")
+        if rollout_ids is not None and sample_idx < len(rollout_ids):
+            info["rollout_id"] = str(rollout_ids[sample_idx])
+    except Exception:
+        pass
+
+    try:
+        extras = batch.non_tensor_batch.get("extras")
+        if extras is not None and sample_idx < len(extras):
+            extra = extras[sample_idx]
+            if isinstance(extra, dict):
+                experience_list = extra.get("experience_list") or []
+                if not isinstance(experience_list, list):
+                    experience_list = [str(experience_list)]
+                info["experience_list"] = experience_list
+                info["used_experience"] = bool(extra.get("add_exp")) and len(experience_list) > 0
+    except Exception:
+        pass
+
+    return info
 
 # =========================================================
 # Added: rollout parsing & batch-eval prompt utilities
@@ -298,6 +346,19 @@ def _save_evaluation_record(record: EvaluationRecord, save_dir: Optional[str] = 
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(record_dict, f, ensure_ascii=False, indent=2)
 
+        task_group_dir = step_save_path / "by_task"
+        task_group_dir.mkdir(parents=True, exist_ok=True)
+        task_file_path = task_group_dir / f"{_sanitize_filename(record.task_id)}.jsonl"
+
+        task_record = dict(record_dict)
+        task_record["_metadata"] = {
+            **record_dict["_metadata"],
+            "grouped_by_task_file": str(task_file_path),
+        }
+
+        with open(task_file_path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(task_record, ensure_ascii=False) + "\n")
+
         # print(f"[record_save] ✅ Saved sample {record.sample_idx} with {len(record.steps)} steps: {step_subdir}/{filename}")
 
     except Exception as e:
@@ -438,6 +499,7 @@ async def _evaluate_single_sample_api(
     client: AsyncOpenAI,
     model_name: str,
     task: EvaluationTask,
+    sample_info: Optional[Dict[str, object]],
     semaphore: asyncio.Semaphore,
     overall_score_source: str = "advantages",
     max_retries: int = 200,
@@ -522,6 +584,10 @@ async def _evaluate_single_sample_api(
                 evaluation_type="api",
                 global_step=global_step,
                 epoch=epoch,
+                task_id=sample_info.get("task_id") if sample_info else None,
+                rollout_id=sample_info.get("rollout_id") if sample_info else None,
+                used_experience=sample_info.get("used_experience") if sample_info else None,
+                experience_list=sample_info.get("experience_list") if sample_info else None,
             )
             _save_evaluation_record(record, save_dir)
 
@@ -555,6 +621,10 @@ async def _evaluate_single_sample_api(
                 evaluation_type="api",
                 global_step=global_step,
                 epoch=epoch,
+                task_id=sample_info.get("task_id") if sample_info else None,
+                rollout_id=sample_info.get("rollout_id") if sample_info else None,
+                used_experience=sample_info.get("used_experience") if sample_info else None,
+                experience_list=sample_info.get("experience_list") if sample_info else None,
             )
             _save_evaluation_record(record, save_dir)
 
@@ -646,6 +716,7 @@ async def evaluate_step_flags_parallel(tokenizer, batch, overall_score_source: s
     for sample_idx in range(batch_size):
         query = tokenizer.decode(batch.batch["prompts"][sample_idx], skip_special_tokens=True)
         rollout = tokenizer.decode(batch.batch["responses"][sample_idx], skip_special_tokens=True)
+        sample_info = _extract_sample_experience_info(batch, sample_idx)
         # shuchang: 0809
         # FIXME: Changed to use batch.non_tensor_batch["steps"] directly, no need for additional parsing
         # steps_struct = parse_rollout_to_steps(rollout)
@@ -711,7 +782,11 @@ async def evaluate_step_flags_parallel(tokenizer, batch, overall_score_source: s
                     model_name=model_name,
                     evaluation_type=evaluation_type,
                     global_step=global_step,
-                    epoch=epoch
+                    epoch=epoch,
+                    task_id=sample_info.get("task_id"),
+                    rollout_id=sample_info.get("rollout_id"),
+                    used_experience=sample_info.get("used_experience"),
+                    experience_list=sample_info.get("experience_list"),
                 )
                 _save_evaluation_record(record, save_dir)
             skipped_samples += 1
@@ -770,7 +845,18 @@ async def evaluate_step_flags_parallel(tokenizer, batch, overall_score_source: s
 
             # Each task calls _evaluate_single_sample_api to evaluate all steps of the entire sample at once
             coroutines = [
-                _evaluate_single_sample_api(api_client, model_name, task, semaphore, overall_score_source, api_max_retries, save_dir, global_step, epoch)
+                _evaluate_single_sample_api(
+                    api_client,
+                    model_name,
+                    task,
+                    _extract_sample_experience_info(batch, task.sample_idx),
+                    semaphore,
+                    overall_score_source,
+                    api_max_retries,
+                    save_dir,
+                    global_step,
+                    epoch,
+                )
                 for task in batch_tasks
             ]
             batch_results = await asyncio.gather(*coroutines, return_exceptions=True)
