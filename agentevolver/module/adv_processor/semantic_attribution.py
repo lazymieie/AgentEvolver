@@ -61,6 +61,12 @@ class EvaluationRecord:
     rollout_id: Optional[str] = None
     used_experience: Optional[bool] = None
     experience_list: Optional[List[str]] = None
+    original_reward_scores: Optional[Dict[str, object]] = None
+    original_trajectory_score: Optional[float] = None
+    original_trajectory_evaluation: Optional[str] = None
+    trajectory_score: Optional[float] = None
+    trajectory_judgment: Optional[str] = None
+    trajectory_evaluation: Optional[str] = None
 
 
 def _sanitize_filename(value: Optional[str], default: str = "unknown_task") -> str:
@@ -78,6 +84,9 @@ def _extract_sample_experience_info(batch, sample_idx: int) -> Dict[str, object]
         "rollout_id": None,
         "used_experience": False,
         "experience_list": [],
+        "original_reward_scores": None,
+        "original_trajectory_score": None,
+        "original_trajectory_evaluation": None,
     }
 
     try:
@@ -107,7 +116,58 @@ def _extract_sample_experience_info(batch, sample_idx: int) -> Dict[str, object]
     except Exception:
         pass
 
+    try:
+        reward_scores = batch.non_tensor_batch.get("reward_scores")
+        if reward_scores is not None and sample_idx < len(reward_scores):
+            reward_score = reward_scores[sample_idx]
+            if isinstance(reward_score, dict):
+                info["original_reward_scores"] = reward_score
+                outcome = reward_score.get("outcome")
+                if outcome is not None:
+                    try:
+                        info["original_trajectory_score"] = float(outcome)
+                    except Exception:
+                        info["original_trajectory_score"] = outcome
+                description = reward_score.get("description")
+                if description is not None:
+                    info["original_trajectory_evaluation"] = str(description)
+    except Exception:
+        pass
+
     return info
+
+
+def _build_trajectory_summary(overall_score: float, step_results: List[bool], llm_raw_output: str) -> Dict[str, object]:
+    """Build explicit trajectory-level score/judgment/summary fields for saved evaluation logs."""
+    good_steps = sum(1 for flag in step_results if flag)
+    total_steps = len(step_results)
+    bad_steps = total_steps - good_steps
+    judgment = "positive" if get_positive_mask(overall_score) else "negative"
+
+    if llm_raw_output == "SKIPPED_ZERO_ADVANTAGE":
+        summary = (
+            f"Trajectory skipped by ADCA prefilter. "
+            f"overall_score={overall_score:+.4f}, judgment={judgment}, "
+            f"good_steps={good_steps}/{total_steps}, bad_steps={bad_steps}."
+        )
+    elif isinstance(llm_raw_output, str) and llm_raw_output.startswith("ERROR:"):
+        summary = (
+            f"Trajectory evaluation failed and fell back to uniform labels. "
+            f"overall_score={overall_score:+.4f}, judgment={judgment}, "
+            f"good_steps={good_steps}/{total_steps}, bad_steps={bad_steps}."
+        )
+    else:
+        summary = (
+            f"Trajectory judged as {judgment}. "
+            f"overall_score={overall_score:+.4f}, "
+            f"good_steps={good_steps}/{total_steps}, bad_steps={bad_steps}."
+        )
+
+    return {
+        "trajectory_score": float(overall_score),
+        "trajectory_judgment": judgment,
+        "trajectory_evaluation": summary,
+    }
 
 # =========================================================
 # Added: rollout parsing & batch-eval prompt utilities
@@ -572,6 +632,7 @@ async def _evaluate_single_sample_api(
                 "qwen3-30b-a3b-thinking-2507",
                 "qwen3-235b-a22b-thinking-2507",
             }
+            trajectory_summary = _build_trajectory_summary(task.overall_score, step_results, llm_raw_output)
             record = EvaluationRecord(
                 sample_idx=task.sample_idx,
                 query=task.query,
@@ -591,6 +652,12 @@ async def _evaluate_single_sample_api(
                 rollout_id=sample_info.get("rollout_id") if sample_info else None,
                 used_experience=sample_info.get("used_experience") if sample_info else None,
                 experience_list=sample_info.get("experience_list") if sample_info else None,
+                original_reward_scores=sample_info.get("original_reward_scores") if sample_info else None,
+                original_trajectory_score=sample_info.get("original_trajectory_score") if sample_info else None,
+                original_trajectory_evaluation=sample_info.get("original_trajectory_evaluation") if sample_info else None,
+                trajectory_score=trajectory_summary["trajectory_score"],
+                trajectory_judgment=trajectory_summary["trajectory_judgment"],
+                trajectory_evaluation=trajectory_summary["trajectory_evaluation"],
             )
             _save_evaluation_record(record, save_dir)
 
@@ -609,6 +676,7 @@ async def _evaluate_single_sample_api(
         step_results = [uniform_flag for _ in task.steps]
 
         if save_dir:
+            trajectory_summary = _build_trajectory_summary(task.overall_score, step_results, f"ERROR: {str(e)}")
             record = EvaluationRecord(
                 sample_idx=task.sample_idx,
                 query=task.query,
@@ -628,6 +696,12 @@ async def _evaluate_single_sample_api(
                 rollout_id=sample_info.get("rollout_id") if sample_info else None,
                 used_experience=sample_info.get("used_experience") if sample_info else None,
                 experience_list=sample_info.get("experience_list") if sample_info else None,
+                original_reward_scores=sample_info.get("original_reward_scores") if sample_info else None,
+                original_trajectory_score=sample_info.get("original_trajectory_score") if sample_info else None,
+                original_trajectory_evaluation=sample_info.get("original_trajectory_evaluation") if sample_info else None,
+                trajectory_score=trajectory_summary["trajectory_score"],
+                trajectory_judgment=trajectory_summary["trajectory_judgment"],
+                trajectory_evaluation=trajectory_summary["trajectory_evaluation"],
             )
             _save_evaluation_record(record, save_dir)
 
@@ -770,6 +844,7 @@ async def evaluate_step_flags_parallel(tokenizer, batch, overall_score_source: s
             flags_per_sample[sample_idx] = [flag_value] * len(steps_struct)
 
             if save_dir:
+                trajectory_summary = _build_trajectory_summary(overall_score, flags_per_sample[sample_idx], "SKIPPED_ZERO_ADVANTAGE")
                 record = EvaluationRecord(
                     sample_idx=sample_idx,
                     query=query,
@@ -790,6 +865,12 @@ async def evaluate_step_flags_parallel(tokenizer, batch, overall_score_source: s
                     rollout_id=sample_info.get("rollout_id"),
                     used_experience=sample_info.get("used_experience"),
                     experience_list=sample_info.get("experience_list"),
+                    original_reward_scores=sample_info.get("original_reward_scores"),
+                    original_trajectory_score=sample_info.get("original_trajectory_score"),
+                    original_trajectory_evaluation=sample_info.get("original_trajectory_evaluation"),
+                    trajectory_score=trajectory_summary["trajectory_score"],
+                    trajectory_judgment=trajectory_summary["trajectory_judgment"],
+                    trajectory_evaluation=trajectory_summary["trajectory_evaluation"],
                 )
                 _save_evaluation_record(record, save_dir)
             skipped_samples += 1
