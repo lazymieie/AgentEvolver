@@ -41,8 +41,8 @@ export NVCC_PREPEND_FLAGS="--compiler-bindir=/usr/bin"
 PROJECT_DIR="$(pwd)"
 # CONFIG_PATH="$PROJECT_DIR/config"
 CONFIG_PATH="/gemini/space/gjx/AgentEvolver/config"
-env_url=http://10.233.4.180:8080
-em_url=http://10.233.15.130:8001
+env_url=http://10.233.30.30:8080
+em_url=http://10.233.39.177:8001
 current_time=$(date "+%Y%m%d_%H%M%S")
 log_file="/gemini/space/gjx/AgentEvolver/logs/run_trian_qwen3vl8b_base/log_${current_time}.log"
 export HF_HUB_DISABLE_TELEMETRY=1
