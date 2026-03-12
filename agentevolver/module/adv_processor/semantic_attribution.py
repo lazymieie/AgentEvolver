@@ -63,6 +63,14 @@ class EvaluationRecord:
     experience_list: Optional[List[str]] = None
 
 
+def _sanitize_filename(value: Optional[str], default: str = "unknown_task") -> str:
+    """Sanitize arbitrary text into a filesystem-safe filename stem."""
+    text = str(value).strip() if value is not None else ""
+    if not text:
+        text = default
+    return re.sub(r'[<>:"/\\|?*\s]+', "_", text)[:200]
+
+
 def _extract_sample_experience_info(batch, sample_idx: int) -> Dict[str, object]:
     """Extract task/rollout/experience metadata for one sample from DataProto.non_tensor_batch."""
     info = {
@@ -73,11 +81,6 @@ def _extract_sample_experience_info(batch, sample_idx: int) -> Dict[str, object]
     }
 
     try:
-        def _sanitize_filename(value: Optional[str], default: str = "unknown_task") -> str:
-            text = str(value).strip() if value is not None else ""
-            if not text:
-                text = default
-            return re.sub(r'[<>:"/\\|?*\s]+', "_", text)[:200]
         task_ids = batch.non_tensor_batch.get("task_ids")
         if task_ids is not None and sample_idx < len(task_ids):
             info["task_id"] = str(task_ids[sample_idx])
