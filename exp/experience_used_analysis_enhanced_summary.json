@@ -1,0 +1,131 @@
+{
+  "classification_counts": {
+    "unknown": 128
+  },
+  "task_stats": {
+    "multi_turn_miss_func_140": {
+      "count": 4,
+      "mean_compliance": 0.875
+    },
+    "multi_turn_base_196": {
+      "count": 4,
+      "mean_compliance": 0.475
+    },
+    "multi_turn_miss_param_47": {
+      "count": 4,
+      "mean_compliance": 0.3125
+    },
+    "multi_turn_miss_func_29": {
+      "count": 4,
+      "mean_compliance": 0.55
+    },
+    "multi_turn_long_context_68": {
+      "count": 4,
+      "mean_compliance": 0.825
+    },
+    "multi_turn_long_context_192": {
+      "count": 4,
+      "mean_compliance": 0.4575
+    },
+    "multi_turn_base_109": {
+      "count": 4,
+      "mean_compliance": 1.0
+    },
+    "multi_turn_miss_func_7": {
+      "count": 8,
+      "mean_compliance": 0.53875
+    },
+    "multi_turn_miss_param_91": {
+      "count": 4,
+      "mean_compliance": 0.7
+    },
+    "multi_turn_long_context_67": {
+      "count": 4,
+      "mean_compliance": 0.7
+    },
+    "multi_turn_long_context_139": {
+      "count": 4,
+      "mean_compliance": 0.36750000000000005
+    },
+    "multi_turn_miss_param_187": {
+      "count": 4,
+      "mean_compliance": 0.5025
+    },
+    "multi_turn_long_context_80": {
+      "count": 4,
+      "mean_compliance": 0.6875
+    },
+    "multi_turn_base_47": {
+      "count": 4,
+      "mean_compliance": 0.2
+    },
+    "multi_turn_long_context_134": {
+      "count": 4,
+      "mean_compliance": 0.2075
+    },
+    "multi_turn_base_105": {
+      "count": 4,
+      "mean_compliance": 0.3175
+    },
+    "multi_turn_miss_func_5": {
+      "count": 4,
+      "mean_compliance": 0.5
+    },
+    "multi_turn_long_context_31": {
+      "count": 4,
+      "mean_compliance": 0.7
+    },
+    "multi_turn_base_140": {
+      "count": 4,
+      "mean_compliance": 0.3875
+    },
+    "multi_turn_miss_func_191": {
+      "count": 4,
+      "mean_compliance": 0.25
+    },
+    "multi_turn_long_context_153": {
+      "count": 4,
+      "mean_compliance": 0.73
+    },
+    "multi_turn_long_context_22": {
+      "count": 4,
+      "mean_compliance": 0.25
+    },
+    "multi_turn_base_84": {
+      "count": 4,
+      "mean_compliance": 1.0
+    },
+    "multi_turn_base_78": {
+      "count": 4,
+      "mean_compliance": 0.5175000000000001
+    },
+    "multi_turn_miss_func_135": {
+      "count": 4,
+      "mean_compliance": 0.0
+    },
+    "multi_turn_miss_param_30": {
+      "count": 4,
+      "mean_compliance": 0.43
+    },
+    "multi_turn_base_172": {
+      "count": 4,
+      "mean_compliance": 0.5
+    },
+    "multi_turn_long_context_143": {
+      "count": 4,
+      "mean_compliance": 0.5
+    },
+    "multi_turn_miss_func_187": {
+      "count": 4,
+      "mean_compliance": 0.6925
+    },
+    "multi_turn_base_115": {
+      "count": 4,
+      "mean_compliance": 0.0
+    },
+    "multi_turn_base_85": {
+      "count": 4,
+      "mean_compliance": 0.495
+    }
+  }
+}
