@@ -74,6 +74,37 @@ class EnvHandler:
             raise ValueError(
                 f"Answer path {self._answer_path} does not exist. Please refer to README.md for more information."
             )
+        
+    def _load_possible_answer_with_retry(
+        self,
+        possible_answer_file: Union[str, Path],
+        *,
+        max_retries: int = 50,
+        initial_delay: float = 0.1,
+        backoff_factor: float = 2.0,
+    ) -> List[Dict[str, Any]]:
+        """
+        Retry loading answer files to tolerate transient file-lock races on shared filesystems.
+        """
+        delay = initial_delay
+        last_error = None
+
+        for attempt in range(max_retries + 1):
+            try:
+                return load_file(possible_answer_file, sort_by_id=True)
+            except FileNotFoundError as exc:
+                last_error = exc
+                if attempt >= max_retries:
+                    break
+                warnings.warn(
+                    "Transient BFCL answer-file read failure for "
+                    f"{possible_answer_file}; retrying {attempt + 1}/{max_retries}."
+                )
+                time.sleep(delay)
+                delay *= backoff_factor
+
+        raise last_error
+
 
     def interact(
         self, messages: List[Dict[str, Any]], test_entry: Dict[str, Any], **kwargs
@@ -415,7 +446,9 @@ class EnvHandler:
                 possible_answer_file = find_file_by_category(
                     category, self._answer_path
                 )
-                possible_answer = load_file(possible_answer_file, sort_by_id=True)
+                possible_answer = self._load_possible_answer_with_retry(
+                    possible_answer_file
+                )
                 possible_answer = [
                     item for item in possible_answer if item["id"] == test_id
                 ]
