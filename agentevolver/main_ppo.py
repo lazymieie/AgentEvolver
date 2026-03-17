@@ -263,15 +263,16 @@ class TaskRunner:
         # - for code related prompt, we send to a sandbox if there are test cases
         # - finally, we combine all the rewards together
         # - The reward type depends on the tag of the data
-        if config.reward_model.enable:
-            if config.reward_model.strategy in ["fsdp", "fsdp2"]:
-                from verl.workers.fsdp_workers import RewardModelWorker
-            elif config.reward_model.strategy == "megatron":
-                from verl.workers.megatron_workers import RewardModelWorker
-            else:
-                raise NotImplementedError
-            role_worker_mapping[Role.RewardModel] = ray.remote(RewardModelWorker)  # ⭐ Add the reward model worker to the mapping
-            mapping[Role.RewardModel] = global_pool_id
+        #gjx reward
+        # if config.reward_model.enable:
+        #     if config.reward_model.strategy in ["fsdp", "fsdp2"]:
+        #         from verl.workers.fsdp_workers import RewardModelWorker
+        #     elif config.reward_model.strategy == "megatron":
+        #         from verl.workers.megatron_workers import RewardModelWorker
+        #     else:
+        #         raise NotImplementedError
+        #     role_worker_mapping[Role.RewardModel] = ray.remote(RewardModelWorker)  # ⭐ Add the reward model worker to the mapping
+        #     mapping[Role.RewardModel] = global_pool_id
 
         # use reference model
         if config.algorithm.use_kl_in_reward or config.actor_rollout_ref.actor.use_kl_loss:
