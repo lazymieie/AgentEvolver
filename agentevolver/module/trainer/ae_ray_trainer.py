@@ -245,6 +245,7 @@ def union_gen_batch_via_task_id(tasks, batch: DataProto, gen_batch_output: DataP
 from collections import defaultdict
 import torch
 import numpy as np
+from agentevolver.module.adv_processor.turn_level_credit import compute_turn_level_advantage
 
 def compute_grpo_outcome_advantage(
     token_level_rewards: torch.Tensor,
@@ -479,6 +480,31 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
             index=data.non_tensor_batch["uid"],
             norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
         )  # ⭐ Compute advantages and returns for GRPO
+
+        turn_credit_cfg = config.get("turn_level_credit", {}) if config is not None else {}
+        if turn_credit_cfg.get("enable", False):
+            required_keys = ("token_entropy", "step_ids", "group_ids")
+            missing_keys = [key for key in required_keys if key not in data.batch.keys()]
+            if missing_keys:
+                logger.warning(
+                    "turn_level_credit is enabled but missing batch keys: {}. "
+                    "Skipping turn-level credit.".format(missing_keys)
+                )
+            else:
+                turn_credit_weight = float(turn_credit_cfg.get("weight", 1.0))
+                turn_credit_epsilon = float(turn_credit_cfg.get("epsilon", 1e-6))
+                turn_level_advantage, turn_metrics = compute_turn_level_advantage(
+                    token_entropy=data.batch["token_entropy"],
+                    turn_ids=data.batch["step_ids"],
+                    response_mask=grpo_calculation_mask,
+                    group_ids=data.batch["group_ids"],
+                    epsilon=turn_credit_epsilon,
+                )
+                advantages = advantages + turn_credit_weight * turn_level_advantage
+                returns = advantages
+                turn_metrics["turn_credit/weight"] = turn_credit_weight
+                data.meta_info.setdefault("turn_level_credit_metrics", {}).update(turn_metrics)
+
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
     else:
@@ -2010,6 +2036,7 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                     with _timer("old_log_prob", timing_raw):
                         old_log_prob = self.actor_rollout_wg.compute_log_prob(batch)  # ⭐ Compute old log probabilities
                         entropys = old_log_prob.batch["entropys"]
+                        batch.batch["token_entropy"] = entropys
                         response_masks = batch.batch["response_mask"]
                         loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
                         entropy_loss = agg_loss(loss_mat=entropys, loss_mask=response_masks, loss_agg_mode=loss_agg_mode)
@@ -2095,6 +2122,10 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                             multi_turn=self.config.actor_rollout_ref.rollout.multi_turn.enable,
                             config=self.config.algorithm,
                         )
+                        if "turn_level_credit_metrics" in batch.meta_info:
+                            metrics.update(batch.meta_info.pop("turn_level_credit_metrics"))
+                        if "token_entropy" in batch.batch.keys():
+                            batch.batch.pop("token_entropy")
                         # shuchang
                         # ==================== Begin ADCA GRPO  ====================
                         attribution_cfg = self._get_attribution_config()
@@ -2238,5 +2269,3 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                 assert isinstance(self.train_dataset._mixture_strategy,UnifiedMixtureStrategy)
                 self.train_dataset._mixture_strategy._synthetic_ratio-=1/5 # initial 1, 0 at about epoch 5 (about step 30)
             self.train_dataset.update()  # ⭐ Update the training dataset for the next iteration
-
-

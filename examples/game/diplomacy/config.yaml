@@ -45,3 +45,8 @@ exp_manager:
 # self-attributing
 attribution_driven_credit_assignment:
   enable: false
+
+algorithm:
+  turn_level_credit:
+    enable: true
+    weight: 1.0
