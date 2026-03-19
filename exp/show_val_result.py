@@ -3,7 +3,7 @@ import json
 import numpy as np
 
 # 文件夹路径
-folder_path = "/gemini/space/gjx/AgentEvolver/experiments/tech_synthetic/bfcl_qwen3-8b_agentevolver_val_w_exp/validation_log"
+folder_path = "/gemini/space/gjx/AgentEvolver/experiments/tech_synthetic/bfcl_qwen3-vl-4b_agentevolver_w_nav/validation_log"
 
 
 
