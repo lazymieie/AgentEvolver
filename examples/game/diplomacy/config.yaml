@@ -29,6 +29,8 @@ exp_manager:
   train_sample_mode: "alldiscard"
   train_sample_keepratio: 1.0
   experience_template: "\n\nSome Related Experience to help you to complete the task:<EXP>{}</EXP>\n\n"
+  replace_experience_with_same_token_dummy: false
+  same_token_dummy_fragment: "x"
   init_exp_before_training: False
   init_exp_only: False
   summary_batch_size: 8

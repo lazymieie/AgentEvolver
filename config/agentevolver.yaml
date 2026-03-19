@@ -180,6 +180,10 @@ exp_manager:
   train_sample_keepratio: 1.0
   # template for inserting experience
   experience_template: "\n\nSome Related Experience to help you to complete the task:<EXP>{}</EXP>\n\n"
+  # replace retrieved experience with meaningless text of the same token length
+  replace_experience_with_same_token_dummy: false
+  # preferred fragment for dummy text; should ideally map to one token under the active tokenizer
+  same_token_dummy_fragment: "x"
   # whether to init experience pool before training
   init_exp_before_training: false
   # whether to only init experience pool

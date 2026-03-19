@@ -337,7 +337,7 @@ class ExperienceManager(object):
 
 
 class ExperienceWorker(object):
-    def __init__(self, config: DictConfig):
+    def __init__(self, config: DictConfig, tokenizer=None):
         """
         Initializes the ExperienceWorker with the provided configuration.
 
@@ -345,9 +345,86 @@ class ExperienceWorker(object):
             config (DictConfig): Configuration settings for the experience worker.
         """
         self.config: DictConfig = config
+        self.tokenizer = tokenizer
         self.experience_template = self.config.exp_manager.experience_template
         # artifact_recorder will be set by ExperienceManager if available
         self.artifact_recorder = None
+
+    def _should_replace_with_dummy_experience(self) -> bool:
+        return bool(
+            getattr(
+                self.config.exp_manager,
+                "replace_experience_with_same_token_dummy",
+                False,
+            )
+        )
+
+    def _select_repeatable_dummy_fragment(self) -> str:
+        configured_fragment = getattr(
+            self.config.exp_manager, "same_token_dummy_fragment", None
+        )
+        candidate_fragments = [configured_fragment, "x", "~", ".", "啊", "哈", "废"]
+
+        if self.tokenizer is None:
+            for fragment in candidate_fragments:
+                if fragment:
+                    return fragment
+            return "x"
+
+        for fragment in candidate_fragments:
+            if not fragment:
+                continue
+            token_ids = self.tokenizer.encode(fragment, add_special_tokens=False)
+            if len(token_ids) != 1:
+                continue
+            if self.tokenizer.encode(fragment * 8, add_special_tokens=False) == token_ids * 8:
+                return fragment
+
+        vocab_size = getattr(self.tokenizer, "vocab_size", 0) or 0
+        for token_id in range(vocab_size):
+            piece = self.tokenizer.decode(
+                [token_id],
+                skip_special_tokens=False,
+                clean_up_tokenization_spaces=False,
+            )
+            if not piece or piece.strip() == "":
+                continue
+            if any(ord(ch) < 32 for ch in piece):
+                continue
+            if self.tokenizer.encode(piece, add_special_tokens=False) != [token_id]:
+                continue
+            if self.tokenizer.encode(piece * 8, add_special_tokens=False) == [token_id] * 8:
+                return piece
+
+        return "x"
+
+    def _build_same_token_dummy_experience(self, original_experience: str) -> str:
+        if self.tokenizer is None:
+            dummy_fragment = self._select_repeatable_dummy_fragment()
+            return dummy_fragment * len(original_experience)
+
+        target_token_count = len(
+            self.tokenizer.encode(original_experience, add_special_tokens=False)
+        )
+        if target_token_count == 0:
+            return ""
+
+        dummy_fragment = self._select_repeatable_dummy_fragment()
+        dummy_token_ids = self.tokenizer.encode(dummy_fragment, add_special_tokens=False)
+        if len(dummy_token_ids) != 1:
+            raise ValueError(
+                "same_token_dummy_fragment must map to exactly one token for exact replacement."
+            )
+
+        dummy_text = dummy_fragment * target_token_count
+        actual_token_count = len(
+            self.tokenizer.encode(dummy_text, add_special_tokens=False)
+        )
+        if actual_token_count != target_token_count:
+            raise ValueError(
+                "Failed to build dummy experience with the same token length."
+            )
+        return dummy_text
     
     def manage_rollout_context(self, init_messages: List[dict], traj_exp_config: TrajExpConfig) -> Tuple[List[dict], TrajExpConfig]:
         """
@@ -424,6 +501,11 @@ class ExperienceWorker(object):
 
         # apply experience to trajectory
         # logger.info(f"Retrieved history experience: {history_experience}")
+        if self._should_replace_with_dummy_experience():
+            history_experience = self._build_same_token_dummy_experience(
+                str(history_experience)
+            )
+
         formatted_experience = self.experience_template.format(history_experience)
         new_content = formatted_experience + trajectory.steps[-1]["content"]
         original_content = trajectory.steps[-1]["content"]
@@ -512,4 +594,3 @@ class ExperienceWorker(object):
 
         
         return experience, cleaned_message
-

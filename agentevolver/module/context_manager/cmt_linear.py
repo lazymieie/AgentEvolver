@@ -596,7 +596,7 @@ class Linear_CMT(Trajectory, ContextManagerBase):
         from verl.utils.model import compute_position_id_with_mask
         ext_steps = self.remove_last_non_llm_msg(copy.deepcopy(ext_steps))  # ⭐ Remove the last non-LLM message
 
-        exp_worker = ExperienceWorker(self.config)
+        exp_worker = ExperienceWorker(self.config, tokenizer=self.tokenizer)
         for i, ext_msg in enumerate(ext_steps):
             experience, new_content = exp_worker.manage_training_context(ext_msg.content_for_future, self.metadata)
             if experience:

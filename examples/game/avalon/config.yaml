@@ -30,6 +30,8 @@ exp_manager:
   train_sample_mode: "alldiscard"    # sample mode after train rollout: ["allkeep", "alldiscard", "hybrid"]
   train_sample_keepratio: 1.0     # task-level ratio for keeping experience
   experience_template: "\n\nSome Related Experience to help you to complete the task:<EXP>{}</EXP>\n\n"  # template for inserting experience
+  replace_experience_with_same_token_dummy: false  # replace retrieved experience with meaningless text of the same token length
+  same_token_dummy_fragment: "x"  # preferred fragment for dummy text; should ideally map to one token
   init_exp_before_training: False  # whether to init experience pool before training
   init_exp_only: False  # whether to only init experience pool
   summary_batch_size: 8  # batch size for experience summarization

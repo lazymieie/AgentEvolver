@@ -41,7 +41,7 @@ class AgentFlow(BaseAgentFlow):
         # self.experience_template = self.config.hybrid_experience_training.experience_template
         self.cmt: Union[Linear_CMT, LinearThinkCMT] = None
         self.console_debug_mode: bool = self.config.actor_rollout_ref.rollout.debug_llm_io
-        self.exp_worker = ExperienceWorker(config=self.config)
+        self.exp_worker = ExperienceWorker(config=self.config, tokenizer=self.tokenizer)
         # artifact_recorder will be set from trainer if available
         self.exp_worker.artifact_recorder = None
 
