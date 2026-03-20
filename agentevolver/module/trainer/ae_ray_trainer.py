@@ -483,7 +483,7 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
 
         turn_credit_cfg = config.get("turn_level_credit", {}) if config is not None else {}
         if turn_credit_cfg.get("enable", False):
-            required_keys = ("token_entropy", "step_ids", "group_ids")
+            required_keys = ("token_entropy", "turn_ids", "group_ids")
             missing_keys = [key for key in required_keys if key not in data.batch.keys()]
             if missing_keys:
                 logger.warning(
@@ -495,7 +495,7 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
                 turn_credit_epsilon = float(turn_credit_cfg.get("epsilon", 1e-6))
                 turn_level_advantage, turn_metrics = compute_turn_level_advantage(
                     token_entropy=data.batch["token_entropy"],
-                    turn_ids=data.batch["step_ids"],
+                    turn_ids=data.batch["turn_ids"],
                     response_mask=grpo_calculation_mask,
                     group_ids=data.batch["group_ids"],
                     epsilon=turn_credit_epsilon,

@@ -11,6 +11,7 @@ class StepParseResult:
                                 #   'action_text': str, 'observation_text': str, 
                                 #   'action_start': int, 'action_end': int, 'obs_start': int, 'obs_end': int}]
     step_ids: List[int]          # len == len(response_ids); mark k for assistant action intervals, -1 for others
+    turn_ids: List[int]          # len == len(response_ids); mark k for the whole interaction turn, including observation
 
 def _find_first_subseq(hay, needle):
     """Safe subsequence search, avoid single token mis-matching"""
@@ -187,7 +188,8 @@ def parse_response_ids_to_steps(
     segs.sort(key=lambda x: x["start"])
 
     if not segs:
-        return StepParseResult([], [], [-1] * len(response_ids))
+        empty_ids = [-1] * len(response_ids)
+        return StepParseResult([], [], empty_ids, empty_ids.copy())
 
     # 4) Merge adjacent segments with same role
     merged = []
@@ -205,7 +207,8 @@ def parse_response_ids_to_steps(
     while merged and merged[0]["role"] != "assistant":
         merged.pop(0)
     if not merged:
-        return StepParseResult([], [], [-1] * len(response_ids))
+        empty_ids = [-1] * len(response_ids)
+        return StepParseResult([], [], empty_ids, empty_ids.copy())
 
     # 5) Form steps (assistant segment + several user segments in between form observation)
     steps = []
@@ -241,14 +244,19 @@ def parse_response_ids_to_steps(
 
     # 6) Mark step_ids in place
     step_ids = [-1] * len(response_ids)
+    turn_ids = [-1] * len(response_ids)
     for k, st in enumerate(steps):
         for pos in range(st["action_start"], st["action_end"]):
             step_ids[pos] = k
+            turn_ids[pos] = k
+        if st["obs_start"] < st["obs_end"]:
+            for pos in range(st["obs_start"], st["obs_end"]):
+                turn_ids[pos] = k
         if mark_observation and st["obs_start"] < st["obs_end"]:
             for pos in range(st["obs_start"], st["obs_end"]):
                 step_ids[pos] = k
 
-    return StepParseResult(merged, steps, step_ids)
+    return StepParseResult(merged, steps, step_ids, turn_ids)
 
 
 # Add verification function
@@ -303,4 +311,3 @@ def verify_step_content(batch, tokenizer, sample_idx=0):
         print(f"  Parsed Action: {step['action_text'][:50]}...")
         print(f"  Semantic Action: {semantic_step.get('action', 'MISSING')[:50]}...")
         print(f"  Match: {step['action_text'].strip() == semantic_step.get('action', '').strip()}")
-

@@ -502,6 +502,7 @@ class ParallelEnvManager(object):
         """
         # Initialize lists to store batched data
         step_ids_list  = []
+        turn_ids_list = []
         steps_texts_list = []
         prompt_ids, response_ids = [], []
         prompt_attention_mask, response_attention_mask = [], []
@@ -543,6 +544,7 @@ class ParallelEnvManager(object):
             parse_result = parse_response_ids_to_steps(resp_ids, self.tokenizer) # ⭐ Parse the response IDs into step IDs and texts
 
             step_ids_list.append(torch.tensor(parse_result.step_ids, dtype=torch.long))
+            turn_ids_list.append(torch.tensor(parse_result.turn_ids, dtype=torch.long))
             # generate steps_texts (for semantic evaluation)
             steps_texts_list.append([
                 {"action": s["action_text"], "observation": s["observation_text"]}
@@ -588,10 +590,16 @@ class ParallelEnvManager(object):
         step_ids_pad = pad_sequence(
             step_ids_list, batch_first=True, padding_value=-1
         )
+        turn_ids_pad = pad_sequence(
+            turn_ids_list, batch_first=True, padding_value=-1
+        )
 
         step_ids_pad = pad_sequence_to_length(
             step_ids_pad, self.config.data.max_response_length, -1
         )  # ⭐ Pad step IDs to the maximum response length
+        turn_ids_pad = pad_sequence_to_length(
+            turn_ids_pad, self.config.data.max_response_length, -1
+        )  # ⭐ Pad turn IDs to the maximum response length
         # ------------- shuchang 0714: pad step_ids and steps_texts ------------
 
 
@@ -646,6 +654,7 @@ class ParallelEnvManager(object):
                 "loss_mask": loss_mask,
                 "exp_mask": exp_mask,        # add exp_mask by ANNI
                 "step_ids": step_ids_pad,
+                "turn_ids": turn_ids_pad,
                 "group_ids": group_ids,   # ★ add groupid
             },
             batch_size=len(samples),
