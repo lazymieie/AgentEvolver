@@ -208,12 +208,18 @@ class _TensorboardAdapter:
         os.makedirs(tensorboard_dir, exist_ok=True)
         print(f"Saving tensorboard log to {tensorboard_dir}.")
         self.writer = SummaryWriter(tensorboard_dir)
+        self.flush_every_n_steps = max(1, int(os.environ.get("TENSORBOARD_FLUSH_EVERY_N_STEPS", "10")))
+        self._last_flushed_step = None
 
     def log(self, data, step):
         for key in data:
             self.writer.add_scalar(key, data[key], step)
+        if self._last_flushed_step is None or step - self._last_flushed_step >= self.flush_every_n_steps:
+            self.writer.flush()
+            self._last_flushed_step = step
 
     def finish(self):
+        self.writer.flush()
         self.writer.close()
 
 
