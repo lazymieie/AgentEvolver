@@ -440,9 +440,7 @@ class ExperienceWorker(object):
         return f"The agent is trying to {intent} and observed {obs}."
 
     def _extract_experience_tool_payload_from_text(self, content: str) -> Optional[Dict[str, Any]]:
-        pattern = r"<tool_call>\s*(\{.*?\})\s*</tool_call>"
-        matches = re.findall(pattern, content or "", flags=re.DOTALL)
-        for raw in matches:
+        for raw in self._extract_tool_call_blocks_from_text(content):
             try:
                 payload = json.loads(raw)
             except Exception:
@@ -459,11 +457,31 @@ class ExperienceWorker(object):
                 return arguments
         return None
 
+    def _extract_tool_call_blocks_from_text(self, content: str) -> List[str]:
+        text = content or ""
+        start_tag = "<tool_call>"
+        end_tag = "</tool_call>"
+        blocks: List[str] = []
+        cursor = 0
+
+        while True:
+            start_idx = text.find(start_tag, cursor)
+            if start_idx == -1:
+                break
+            start_idx += len(start_tag)
+            end_idx = text.find(end_tag, start_idx)
+            if end_idx == -1:
+                break
+            block = text[start_idx:end_idx].strip()
+            if block:
+                blocks.append(block)
+            cursor = end_idx + len(end_tag)
+
+        return blocks
+
     def _extract_tool_call_names_from_text(self, content: str) -> List[str]:
-        pattern = r"<tool_call>\s*(\{.*?\})\s*</tool_call>"
-        matches = re.findall(pattern, content or "", flags=re.DOTALL)
         tool_names: List[str] = []
-        for raw in matches:
+        for raw in self._extract_tool_call_blocks_from_text(content):
             try:
                 payload = json.loads(raw)
             except Exception:
@@ -620,7 +638,7 @@ class ExperienceWorker(object):
                 logger.warning(f"Failed to record state experience retrieval: {e}")
 
         if not history_experience:
-            return "No relevant experience guidance was found in memory."
+            return ""
 
         if self._should_replace_with_dummy_experience():
             history_experience = self._build_same_token_dummy_experience(str(history_experience))
