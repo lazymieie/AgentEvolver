@@ -60,7 +60,7 @@ class StateEMClient(HttpClient):
 
     def call_summarizer(
         self,
-        states: Sequence[Trajectory | dict | list | str],
+        states: Sequence[Trajectory | dict | list | str] | None = None,
         workspace_id: str = "default",
         **kwargs,
     ):
@@ -68,6 +68,10 @@ class StateEMClient(HttpClient):
         Send state records to the summary_state_memory endpoint.
         """
         start_time = time.time()
+        if states is None:
+            states = kwargs.pop("trajectories", None)
+        if states is None:
+            raise ValueError("states or trajectories must be provided")
         self.url = self.base_url + "/summary_state_memory"
         json_data = {
             "trajectories": [self._serialize_summary_item(state) for state in states],

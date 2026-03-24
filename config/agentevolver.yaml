@@ -197,9 +197,11 @@ exp_manager:
   reme:
     # base URL for ReMe service
     base_url: "http://127.0.0.1:8001"
+    state_base_url: "http://127.0.0.1:8002"
     workspace_id: "default"
     enable_summarizer: false
     enable_context_generator: false
+    enable_state_tool_retrieval: false
     retrieve_top_k: 3
     updated_freq: 0
 

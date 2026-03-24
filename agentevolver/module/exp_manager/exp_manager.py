@@ -1,3 +1,4 @@
+import json
 import random
 import re
 from loguru import logger
@@ -10,9 +11,45 @@ from concurrent.futures.thread import ThreadPoolExecutor
 from agentevolver.schema.task import Task
 from agentevolver.schema.trajectory import Trajectory
 from agentevolver.client.em_client import EMClient
+from agentevolver.client.state_em_client import StateEMClient
 import time
 from concurrent.futures import Future
 from typing import Optional, List, Union
+
+
+EXPERIENCE_GUIDANCE_TOOL = {
+    "name": "get_experience_guidance",
+    "description": "Call this tool IMMEDIATELY when you encounter an API error, missing information, or feel stuck. It retrieves actionable experience from the memory database to guide your next step.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "current_intent": {
+                "type": "string",
+                "description": "What specific subtask are you trying to complete right now? (e.g., 'Retrieve invoice for booked flight')."
+            },
+            "last_action": {
+                "type": "string",
+                "description": "The exact tool name and parameters you just used (e.g., 'retrieve_invoice with insurance_id=123')."
+            },
+            "current_observation": {
+                "type": "string",
+                "description": "The exact error message, unexpected result, or current environment state."
+            },
+            "issue_type": {
+                "type": "string",
+                "enum": [
+                    "api_error",
+                    "stuck_in_loop",
+                    "missing_parameter",
+                    "uncertain_next_step",
+                    "constraint_violation"
+                ],
+                "description": "Categorize the type of obstacle you are currently facing."
+            }
+        },
+        "required": ["current_intent", "last_action", "current_observation", "issue_type"]
+    }
+}
 
 @dataclass
 class TaskExpConfig:
@@ -53,7 +90,18 @@ class ExperienceManager(object):
         self.train_sample_keepratio = self.exp_manager_config.train_sample_keepratio
 
         self.thread_pool = ThreadPoolExecutor(max_workers=self.config.thread_pool.max_workers)
-        self.em_client = EMClient(base_url=self.reme_config.base_url)
+        if self._use_state_tool_experience():
+            self.em_client = StateEMClient(base_url=self._get_reme_base_url())
+        else:
+            self.em_client = EMClient(base_url=self._get_reme_base_url())
+
+    def _use_state_tool_experience(self) -> bool:
+        return bool(getattr(self.reme_config, "enable_state_tool_retrieval", False))
+
+    def _get_reme_base_url(self) -> str:
+        if self._use_state_tool_experience():
+            return getattr(self.reme_config, "state_base_url", "http://127.0.0.1:8002")
+        return self.reme_config.base_url
     
     def summarize_in_batch(self, trajectories: List[Trajectory]) -> None:
         trajectories_sorted = sorted(trajectories, key=lambda traj: traj.task_id)
@@ -350,6 +398,233 @@ class ExperienceWorker(object):
         # artifact_recorder will be set by ExperienceManager if available
         self.artifact_recorder = None
 
+    def _use_state_tool_experience(self) -> bool:
+        return bool(getattr(self.config.exp_manager.reme, "enable_state_tool_retrieval", False))
+
+    def _get_reme_base_url(self) -> str:
+        reme_config = self.config.exp_manager.reme
+        if self._use_state_tool_experience():
+            return getattr(reme_config, "state_base_url", "http://127.0.0.1:8002")
+        return reme_config.base_url
+
+    def _insert_tool_before_tools_end(self, system_content: str) -> str:
+        tool_str = json.dumps(EXPERIENCE_GUIDANCE_TOOL, ensure_ascii=False)
+        if EXPERIENCE_GUIDANCE_TOOL["name"] in system_content:
+            return system_content
+        if "</tools>" in system_content:
+            return system_content.replace("</tools>", f"{tool_str}\n</tools>", 1)
+        return system_content + f"\n<tools>\n{tool_str}\n</tools>\n"
+
+    def _inject_experience_guidance_tool(self, init_messages: List[dict]) -> List[dict]:
+        patched_messages = [dict(msg) for msg in init_messages]
+        for message in patched_messages:
+            if message.get("role") == "system" and isinstance(message.get("content"), str):
+                message["content"] = self._insert_tool_before_tools_end(message["content"])
+                break
+        return patched_messages
+
+    def _build_declarative_query(self, intent: str, action: str, obs: str, issue_type: str) -> str:
+        if issue_type == "api_error":
+            return f"The agent is trying to {intent} and called {action}, but encountered the API error: {obs}."
+        if issue_type == "stuck_in_loop":
+            return f"The agent is stuck in a loop while trying to {intent}. It repeatedly called {action} and observed {obs}."
+        if issue_type == "missing_parameter":
+            return f"The agent is trying to {intent} but is missing required parameters. The last action was {action} and observation was {obs}."
+        if issue_type == "uncertain_next_step":
+            return f"The agent successfully completed {action} with observation '{obs}', but is uncertain about the next step to achieve {intent}."
+        if issue_type == "constraint_violation":
+            return f"The agent is trying to {intent} using {action}, but the observation '{obs}' violates business constraints."
+        return f"The agent is trying to {intent} and observed {obs}."
+
+    def _extract_experience_tool_payload_from_text(self, content: str) -> Optional[Dict[str, Any]]:
+        pattern = r"<tool_call>\s*(\{.*?\})\s*</tool_call>"
+        matches = re.findall(pattern, content or "", flags=re.DOTALL)
+        for raw in matches:
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                continue
+            if payload.get("name") != EXPERIENCE_GUIDANCE_TOOL["name"]:
+                continue
+            arguments = payload.get("arguments", {})
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except Exception:
+                    arguments = {}
+            if isinstance(arguments, dict):
+                return arguments
+        return None
+
+    def _extract_tool_call_names_from_text(self, content: str) -> List[str]:
+        pattern = r"<tool_call>\s*(\{.*?\})\s*</tool_call>"
+        matches = re.findall(pattern, content or "", flags=re.DOTALL)
+        tool_names: List[str] = []
+        for raw in matches:
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                continue
+            name = payload.get("name")
+            if isinstance(name, str) and name:
+                tool_names.append(name)
+        return tool_names
+
+    def get_called_tool_names(self, llm_output: Dict[str, Any]) -> List[str]:
+        tool_names: List[str] = []
+        for tool_call in llm_output.get("tool_calls") or []:
+            function_info = tool_call.get("function") or {}
+            name = function_info.get("name")
+            if isinstance(name, str) and name:
+                tool_names.append(name)
+        if tool_names:
+            return tool_names
+        return self._extract_tool_call_names_from_text(llm_output.get("content", ""))
+
+    def has_mixed_experience_and_other_tool_calls(self, llm_output: Dict[str, Any]) -> bool:
+        tool_names = self.get_called_tool_names(llm_output)
+        if not tool_names:
+            return False
+        has_experience_tool = EXPERIENCE_GUIDANCE_TOOL["name"] in tool_names
+        has_other_tool = any(name != EXPERIENCE_GUIDANCE_TOOL["name"] for name in tool_names)
+        return has_experience_tool and has_other_tool
+
+    def _extract_experience_tool_payload(self, llm_output: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        for tool_call in llm_output.get("tool_calls") or []:
+            function_info = tool_call.get("function") or {}
+            if function_info.get("name") != EXPERIENCE_GUIDANCE_TOOL["name"]:
+                continue
+            arguments = function_info.get("arguments", {})
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except Exception:
+                    arguments = {}
+            if isinstance(arguments, dict):
+                return arguments
+        return self._extract_experience_tool_payload_from_text(llm_output.get("content", ""))
+
+    def has_experience_guidance_tool_call(self, llm_output: Dict[str, Any]) -> bool:
+        return self._extract_experience_tool_payload(llm_output) is not None
+
+    def render_experience_tool_call(self, llm_output: Dict[str, Any]) -> str:
+        payload = self._extract_experience_tool_payload(llm_output)
+        if payload is None:
+            return llm_output.get("content", "")
+        rendered = {
+            "name": EXPERIENCE_GUIDANCE_TOOL["name"],
+            "arguments": payload,
+        }
+        return f"<tool_call>\n{json.dumps(rendered, ensure_ascii=False)}\n</tool_call>"
+
+    def prepend_experience_to_latest_message(
+        self,
+        messages: List[Dict[str, Any]],
+        formatted_experience: str,
+    ) -> List[Dict[str, Any]]:
+        patched_messages = [dict(message) for message in messages]
+        if not formatted_experience:
+            return patched_messages
+
+        for idx in range(len(patched_messages) - 1, -1, -1):
+            content = patched_messages[idx].get("content")
+            if not isinstance(content, str):
+                continue
+            if patched_messages[idx].get("role") != "user":
+                continue
+            patched_messages[idx]["content"] = formatted_experience + content
+            return patched_messages
+
+        if patched_messages and isinstance(patched_messages[-1].get("content"), str):
+            patched_messages[-1]["content"] = formatted_experience + patched_messages[-1]["content"]
+        return patched_messages
+
+    def record_experience_usage(
+        self,
+        formatted_experience: str,
+        traj_exp_config: TrajExpConfig,
+        task_id: str = "unknown",
+        prompt_with_exp: str = "",
+        prompt_without_exp: str = "",
+    ) -> None:
+        if not formatted_experience:
+            return
+
+        traj_exp_config.experience_list.append(formatted_experience)
+
+        if hasattr(self, 'artifact_recorder') and self.artifact_recorder and self.artifact_recorder.enable:
+            try:
+                self.artifact_recorder.write_experience_injection(
+                    task_id=task_id,
+                    injection_template_name=self.experience_template,
+                    prompt_with_exp=prompt_with_exp,
+                    prompt_without_exp=prompt_without_exp,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record state experience injection: {e}")
+
+    def retrieve_state_tool_experience(
+        self,
+        llm_output: Dict[str, Any],
+        traj_exp_config: TrajExpConfig,
+        task_id: str = "unknown",
+    ) -> str:
+        payload = self._extract_experience_tool_payload(llm_output)
+        if payload is None:
+            return ""
+
+        intent = str(payload.get("current_intent", "")).strip()
+        action = str(payload.get("last_action", "")).strip()
+        obs = str(payload.get("current_observation", "")).strip()
+        issue_type = str(payload.get("issue_type", "")).strip()
+        query = self._build_declarative_query(intent, action, obs, issue_type)
+
+        self._ensure_em_client()
+        reme_config = self.config.exp_manager.reme
+        history_experience = self.em_client.call_context_generator(
+            state=query,
+            retrieve_top_k=reme_config.retrieve_top_k,
+            workspace_id=reme_config.workspace_id,
+        )
+
+        if hasattr(self, 'artifact_recorder') and self.artifact_recorder and self.artifact_recorder.enable:
+            try:
+                topk_list = []
+                if isinstance(history_experience, list):
+                    for exp in history_experience:
+                        if isinstance(exp, dict):
+                            topk_list.append({
+                                "exp_id": exp.get("id", exp.get("exp_id", "unknown")),
+                                "score": exp.get("score", exp.get("similarity", 0.0)),
+                                "when_to_use": exp.get("when_to_use", ""),
+                                "content": exp.get("content", str(exp)),
+                                "source_task_id": exp.get("source_task_id", None),
+                                "source_traj_id": exp.get("source_traj_id", None),
+                            })
+                elif isinstance(history_experience, str) and history_experience:
+                    topk_list.append({
+                        "exp_id": "unknown",
+                        "score": 1.0,
+                        "when_to_use": "",
+                        "content": history_experience,
+                    })
+                self.artifact_recorder.write_experience_retrieval(
+                    task_id=task_id,
+                    query=query,
+                    topk=topk_list,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record state experience retrieval: {e}")
+
+        if not history_experience:
+            return "No relevant experience guidance was found in memory."
+
+        if self._should_replace_with_dummy_experience():
+            history_experience = self._build_same_token_dummy_experience(str(history_experience))
+
+        formatted_experience = self.experience_template.format(history_experience)
+        return formatted_experience
+
     def _should_replace_with_dummy_experience(self) -> bool:
         return bool(
             getattr(
@@ -437,6 +712,11 @@ class ExperienceWorker(object):
         Returns:
             Tuple[List[dict], TrajExpConfig]: Updated messages and modified trajectory experience config.
         """
+        if self._use_state_tool_experience():
+            if not traj_exp_config.add_exp:
+                return init_messages, traj_exp_config
+            return self._inject_experience_guidance_tool(init_messages), traj_exp_config
+
         # check experience conditions
         if not self._should_process_experience(traj_exp_config):
             return init_messages, traj_exp_config
@@ -510,7 +790,7 @@ class ExperienceWorker(object):
         new_content = formatted_experience + trajectory.steps[-1]["content"]
         original_content = trajectory.steps[-1]["content"]
         trajectory.steps[-1]["content"] = new_content
-        traj_exp_config.experience_list = traj_exp_config.experience_list + [formatted_experience]
+        traj_exp_config.experience_list.append(formatted_experience)
 
         # Record experience injection
         if hasattr(self, 'artifact_recorder') and self.artifact_recorder and self.artifact_recorder.enable:
@@ -545,9 +825,8 @@ class ExperienceWorker(object):
         Initializes the EM client if it doesn't exist.
         """
         if not hasattr(self, 'em_client'):
-            self.em_client = EMClient(
-                base_url=self.config.exp_manager.reme.base_url
-            )
+            client_cls = StateEMClient if self._use_state_tool_experience() else EMClient
+            self.em_client = client_cls(base_url=self._get_reme_base_url())
 
 
 

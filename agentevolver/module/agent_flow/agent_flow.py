@@ -126,6 +126,26 @@ class AgentFlow(BaseAgentFlow):
         request_id: str = ""
         err_in_generating=False
         err_in_env = False
+
+        def mark_generation_failure(step: int, reason: str) -> None:
+            self.cmt.is_terminated = False
+            self.cmt.metadata["generation_failure"] = True
+            self.cmt.metadata["generation_failure_step"] = step
+            self.cmt.metadata["generation_failure_reason"] = reason
+
+        def record_tool_call_issue(step: int, stage: str, llm_output: Dict[str, Any]) -> None:
+            issue = {
+                "step": step,
+                "stage": stage,
+                "type": "mixed_experience_and_other_tool_calls",
+                "tool_names": self.exp_worker.get_called_tool_names(llm_output),
+            }
+            existing_issues = self.cmt.metadata.get("experience_tool_call_issues")
+            if not isinstance(existing_issues, list):
+                existing_issues = []
+                self.cmt.metadata["experience_tool_call_issues"] = existing_issues
+            existing_issues.append(issue)
+
         for act_step in range(self.max_steps):
             # 2. 🔄 Update thread progress
             tmux['step'][thread_index] = act_step
@@ -153,49 +173,106 @@ class AgentFlow(BaseAgentFlow):
             # print("debug：act_step")
             # print(act_step)
             # 5. 🤖 call llm
+            final_step_input_message_arr = step_input_message_arr
+            transient_state_experience = ""
+            transient_injection_applied = False
             llm_output = self.llm_chat_fn(step_input_message_arr, request_id=request_id)  # ⭐ Call the LLM to generate the next response
+            if "content" not in llm_output or llm_output["content"] is None:
+                llm_output["content"] = ""
+            use_state_tool_experience = (
+                traj_exp_config.add_exp and
+                self.exp_worker._use_state_tool_experience()
+            )
+            if use_state_tool_experience and self.exp_worker.has_mixed_experience_and_other_tool_calls(llm_output):
+                logger.warning(
+                    f"Assistant mixed get_experience_guidance with other tool calls in the same response "
+                    f"at step {act_step}; continuing as experience-only handling."
+                )
+                record_tool_call_issue(act_step, "initial_request", llm_output)
+            if use_state_tool_experience and self.exp_worker.has_experience_guidance_tool_call(llm_output):
+                transient_state_experience = self.exp_worker.retrieve_state_tool_experience(
+                    llm_output=llm_output,
+                    traj_exp_config=traj_exp_config,
+                    task_id=task_id,
+                )
+                final_step_input_message_arr = self.exp_worker.prepend_experience_to_latest_message(
+                    step_input_message_arr,
+                    transient_state_experience,
+                )
+                transient_injection_applied = final_step_input_message_arr != step_input_message_arr
+
+                is_safe = self.cmt.check_context_token_num_safe(final_step_input_message_arr)
+                if not is_safe:
+                    logger.warning(f"Token overflow detected after transient state experience injection at step {act_step}.")
+                    final_step_input_message_arr = step_input_message_arr
+                    transient_injection_applied = False
+
+                max_guided_generation_retries = 2
+                generation_succeeded = False
+                for guided_retry_idx in range(max_guided_generation_retries):
+                    llm_output = self.llm_chat_fn(final_step_input_message_arr, request_id=request_id)
+                    if "content" not in llm_output or llm_output["content"] is None:
+                        llm_output["content"] = ""
+
+                    if self.exp_worker.has_mixed_experience_and_other_tool_calls(llm_output):
+                        logger.warning(
+                            f"Assistant mixed get_experience_guidance with other tool calls after transient injection "
+                            f"at step {act_step}; continuing as experience-only handling."
+                        )
+                        record_tool_call_issue(act_step, f"guided_retry_{guided_retry_idx + 1}", llm_output)
+
+                    if not self.exp_worker.has_experience_guidance_tool_call(llm_output):
+                        generation_succeeded = True
+                        break
+
+                    logger.warning(
+                        f"Assistant requested get_experience_guidance again after transient injection "
+                        f"at step {act_step}, retry {guided_retry_idx + 1}/{max_guided_generation_retries}."
+                    )
+
+                if not generation_succeeded:
+                    logger.warning(
+                        f"Generation failure at step {act_step}: assistant still called "
+                        f"get_experience_guidance after {max_guided_generation_retries} retries."
+                    )
+                    err_in_generating = True
+                    mark_generation_failure(act_step, "experience_guidance_retry_exceeded")
+                    break
+
+                if generation_succeeded and transient_injection_applied:
+                    latest_prompt_with_exp = ""
+                    latest_prompt_without_exp = ""
+                    if final_step_input_message_arr:
+                        latest_prompt_with_exp = str(final_step_input_message_arr[-1].get("content", ""))
+                    if step_input_message_arr:
+                        latest_prompt_without_exp = str(step_input_message_arr[-1].get("content", ""))
+                    self.exp_worker.record_experience_usage(
+                        formatted_experience=transient_state_experience,
+                        traj_exp_config=traj_exp_config,
+                        task_id=task_id,
+                        prompt_with_exp=latest_prompt_with_exp,
+                        prompt_without_exp=latest_prompt_without_exp,
+                    )
             if (stop is not None) and stop[thread_index]:  # Check if the thread should stop (because other threads have completed, making this thread useless)
                 self.cmt.discarded = True
                 break
             
             # 6. 💾 save llm output
-            self.cmt.save_llm_output(llm_output, input_msg_ref=step_input_message_arr)  # ⭐ Save the LLM output
+            self.cmt.save_llm_output(llm_output, input_msg_ref=final_step_input_message_arr)  # ⭐ Save the LLM output
             tmux['token'][thread_index] += self.cmt.generated_token_cnt
 
             # 7. 🌍 world interaction
             try:
                 world_interaction_content = self.cmt.prepare_world_interaction()
-                # DEBUG (disabled): Print what is being sent to environment
-                # if hasattr(self.cmt, '__class__') and 'Memory' in self.cmt.__class__.__name__:
-                #     print_dict({
-                #         "DEBUG_AGENTFLOW_ENV_STEP": {
-                #             "step": act_step,
-                #             "content_to_env": world_interaction_content[:500] if world_interaction_content else "EMPTY",
-                #             "content_length": len(world_interaction_content) if world_interaction_content else 0,
-                #             "content_is_empty": not world_interaction_content or world_interaction_content.strip() == "",
-                #         }
-                #     }, mod='memory_debug')
                 env_output = env.step(instance_id, {"content": world_interaction_content, "role": "assistant"})  # ⭐ Interact with the environment
                 assert len(env_output['state'])==1
                 env_output["state"] = env_output["state"][0]
                 if env_output["state"]["role"] == "tool":
                     env_output["state"] = convert_tool_to_user_message(env_output["state"], self.tokenizer, format="qwen")
                 
-                # DEBUG (disabled): Print env response and reward info
-                # if hasattr(self.cmt, '__class__') and 'Memory' in self.cmt.__class__.__name__:
-                #     print_dict({
-                #         "DEBUG_AGENTFLOW_ENV_RESPONSE": {
-                #             "step": act_step,
-                #             "env_state_role": env_output["state"].get("role", "unknown"),
-                #             "env_state_content_preview": env_output["state"].get("content", "")[:300] if env_output["state"].get("content") else "EMPTY",
-                #             "is_terminated": env_output.get("is_terminated", False),
-                #             "env_reward": env_output.get("reward", None),
-                #         }
-                #     }, mod='memory_debug')
-                
                 if self.console_debug_mode:
                     print_listofdict(
-                        step_input_message_arr +
+                        final_step_input_message_arr +
                         [{'role': 'llm_latest', 'content': llm_output['content']}] +
                         [{'role': 'env',        'content': env_output["state"]['content']}]
                     , mod='c')
