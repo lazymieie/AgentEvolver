@@ -173,3 +173,5 @@ local_vector_store/
 models/
 *.txt
 A800_copy/
+exp/
+external/

@@ -4,7 +4,7 @@ algorithm:
   use_kl_in_reward: false
   turn_level_credit:
     enable: false
-    weight: 1.0
+    weight: 0.2
     epsilon: 1e-6
 
 data:
