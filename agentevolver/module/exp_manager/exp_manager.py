@@ -102,6 +102,9 @@ class ExperienceManager(object):
         if self._use_state_tool_experience():
             return getattr(self.reme_config, "state_base_url", "http://127.0.0.1:8002")
         return self.reme_config.base_url
+
+    def get_experience_pool_mode(self) -> str:
+        return "state" if self._use_state_tool_experience() else "task"
     
     def summarize_in_batch(self, trajectories: List[Trajectory]) -> None:
         trajectories_sorted = sorted(trajectories, key=lambda traj: traj.task_id)

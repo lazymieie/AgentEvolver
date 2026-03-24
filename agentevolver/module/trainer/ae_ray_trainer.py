@@ -1437,6 +1437,8 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
     def initialize_exp_pool(self):
         """
         """
+        exp_pool_mode = self.exp_manager.get_experience_pool_mode()
+        print(f"[InitExpPool] initialize {exp_pool_mode} experience pool before training")
         for i, test_data in enumerate(self.val_dataloader):
             test_batch = DataProto.from_single_dict(test_data)
 
@@ -1583,7 +1585,7 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                 print("=" * 10 + "end validate rollout" + "=" * 10)
                 self.async_rollout_manager.sleep()
 
-            # summarize in batch: updating experience pool
+            # summarize in batch: updating task/state experience pool according to the shared switch
             self.exp_manager.summarize_in_batch(trajectories)
         
         return
