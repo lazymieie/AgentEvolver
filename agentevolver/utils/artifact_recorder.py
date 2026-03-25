@@ -427,6 +427,45 @@ class ArtifactRecorder:
             ],
         }
         self.write_jsonl("experience_retrieval", record, global_step)
+
+    def write_generation_failures(
+        self,
+        task_id: str,
+        traj_id: str,
+        mode: str,
+        step: int,
+        reason: str,
+        stage: Optional[str] = None,
+        prompt_with_exp: Optional[str] = None,
+        prompt_without_exp: Optional[str] = None,
+        llm_output: Optional[Dict[str, Any]] = None,
+        tool_names: Optional[List[str]] = None,
+        global_step: Optional[int] = None,
+    ):
+        """Record generation failures during rollout."""
+        if not self.enable:
+            return
+
+        record: Dict[str, Any] = {
+            "task_id": task_id,
+            "traj_id": traj_id,
+            "mode": mode,
+            "step": step,
+            "reason": reason,
+        }
+
+        if stage is not None:
+            record["stage"] = stage
+        if prompt_with_exp is not None:
+            record["prompt_with_exp"] = self._truncate_str(prompt_with_exp)
+        if prompt_without_exp is not None:
+            record["prompt_without_exp"] = self._truncate_str(prompt_without_exp)
+        if llm_output is not None:
+            record["llm_output"] = self._truncate_dict(llm_output)
+        if tool_names is not None:
+            record["tool_names"] = tool_names
+
+        self.write_jsonl("generation_failures", record, global_step)
     
     def write_experience_injection(
         self,
@@ -596,6 +635,12 @@ Experience removal during training (for loss calculation).
 - **Fields**: task_id, before, after, token_spans
 - **When**: Recorded when experiences are stripped from training prompts
 
+### generation_failures.jsonl
+Generation failures during rollout, including repeated experience-guidance requests.
+- **Source**: `agentevolver.module.agent_flow.agent_flow.AgentFlow.execute()`
+- **Fields**: task_id, traj_id, mode, step, reason, stage, prompt_with_exp, prompt_without_exp, llm_output, tool_names
+- **When**: Recorded when a rollout step is marked as generation failure
+
 ### rewards.jsonl
 Reward calculation results.
 - **Source**: `agentevolver.module.agent_flow.reward_calculator.*`
@@ -650,7 +695,6 @@ python3 -m agentevolver.main_ppo ... debug_artifacts.enable=true
                 f.write(readme_content)
         except Exception as e:
             _get_logger().warning(f"Failed to write README: {e}")
-
 
 
 

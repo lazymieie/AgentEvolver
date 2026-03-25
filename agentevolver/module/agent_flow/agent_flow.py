@@ -127,11 +127,37 @@ class AgentFlow(BaseAgentFlow):
         err_in_generating=False
         err_in_env = False
 
-        def mark_generation_failure(step: int, reason: str) -> None:
+        traj_id = f"{data_id}_{rollout_id}" if data_id and rollout_id else f"{task_id}_unknown"
+
+        def mark_generation_failure(
+            step: int,
+            reason: str,
+            stage: str | None = None,
+            prompt_with_exp: str | None = None,
+            prompt_without_exp: str | None = None,
+            llm_output: Dict[str, Any] | None = None,
+        ) -> None:
             self.cmt.is_terminated = False
             self.cmt.metadata["generation_failure"] = True
             self.cmt.metadata["generation_failure_step"] = step
             self.cmt.metadata["generation_failure_reason"] = reason
+            if stage is not None:
+                self.cmt.metadata["generation_failure_stage"] = stage
+
+            if hasattr(self, 'artifact_recorder') and self.artifact_recorder and self.artifact_recorder.enable:
+                mode = "mixed" if getattr(traj_exp_config, "add_exp", False) else "woexp"
+                self.artifact_recorder.write_generation_failures(
+                    task_id=task_id,
+                    traj_id=traj_id,
+                    mode=mode,
+                    step=step,
+                    reason=reason,
+                    stage=stage,
+                    prompt_with_exp=prompt_with_exp,
+                    prompt_without_exp=prompt_without_exp,
+                    llm_output=llm_output,
+                    tool_names=self.exp_worker.get_called_tool_names(llm_output) if llm_output else None,
+                )
 
         def record_tool_call_issue(step: int, stage: str, llm_output: Dict[str, Any]) -> None:
             issue = {
@@ -236,7 +262,20 @@ class AgentFlow(BaseAgentFlow):
                         f"get_experience_guidance after {max_guided_generation_retries} retries."
                     )
                     err_in_generating = True
-                    mark_generation_failure(act_step, "experience_guidance_retry_exceeded")
+                    latest_prompt_with_exp = ""
+                    latest_prompt_without_exp = ""
+                    if final_step_input_message_arr:
+                        latest_prompt_with_exp = str(final_step_input_message_arr[-1].get("content", ""))
+                    if step_input_message_arr:
+                        latest_prompt_without_exp = str(step_input_message_arr[-1].get("content", ""))
+                    mark_generation_failure(
+                        act_step,
+                        "experience_guidance_retry_exceeded",
+                        stage=f"guided_retry_{max_guided_generation_retries}",
+                        prompt_with_exp=latest_prompt_with_exp,
+                        prompt_without_exp=latest_prompt_without_exp,
+                        llm_output=llm_output,
+                    )
                     break
 
                 if generation_succeeded and transient_injection_applied:
@@ -353,8 +392,6 @@ class AgentFlow(BaseAgentFlow):
         self.cmt.remove_last_context()
 
         # Record rollout
-        traj_id = f"{data_id}_{rollout_id}" if data_id and rollout_id else f"{task_id}_unknown"
-
         # 统一记录原始对话轨迹（所有 CMT 通用，包含 linear / linear_think / context_selfclip / memory 等）
         # self._log_raw_conversation(task_id=task_id, traj_id=traj_id)
 
