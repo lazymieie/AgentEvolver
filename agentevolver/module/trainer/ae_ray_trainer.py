@@ -1452,6 +1452,20 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
             f"[InitExpPool] initialize {exp_pool_mode} experience pool before training "
             f"using {init_split} split"
         )
+        init_summary_request_timeout = self.config.exp_manager.get("init_exp_summary_request_timeout", None)
+        if init_summary_request_timeout is not None:
+            init_summary_request_timeout = float(init_summary_request_timeout)
+        init_exp_pool_max_workers = int(self.config.exp_manager.get("init_exp_pool_max_workers", 1))
+
+        use_infinite_init_summary_timeout = (
+            exp_pool_mode == "state" and init_summary_request_timeout is None
+        )
+
+        if use_infinite_init_summary_timeout:
+            print("[InitExpPool] state summary request timeout is disabled; waiting for ReMe summarization to finish.")
+        elif init_summary_request_timeout is not None:
+            print(f"[InitExpPool] summary request timeout={init_summary_request_timeout}s")
+        print(f"[InitExpPool] max concurrent summarize requests={init_exp_pool_max_workers}")
         for i, batch_data in enumerate(dataloader):
             test_batch = DataProto.from_single_dict(batch_data)
 
@@ -1608,7 +1622,12 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                 self.async_rollout_manager.sleep()
 
             # summarize in batch: updating task/state experience pool according to the shared switch
-            self.exp_manager.summarize_in_batch(trajectories)
+            self.exp_manager.summarize_in_batch(
+                trajectories,
+                request_timeout=init_summary_request_timeout,
+                wait_indefinitely=use_infinite_init_summary_timeout,
+                max_concurrent_batches=init_exp_pool_max_workers,
+            )
         
         return
     def _compute_rollout_statistics(self, batch: DataProto, trajectories: List[Trajectory], epoch: int, batch_idx: int, rollout_start_time: float = None):

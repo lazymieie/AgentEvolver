@@ -106,7 +106,13 @@ class ExperienceManager(object):
     def get_experience_pool_mode(self) -> str:
         return "state" if self._use_state_tool_experience() else "task"
     
-    def summarize_in_batch(self, trajectories: List[Trajectory]) -> None:
+    def summarize_in_batch(
+        self,
+        trajectories: List[Trajectory],
+        request_timeout: Optional[float] = None,
+        wait_indefinitely: bool = False,
+        max_concurrent_batches: Optional[int] = None,
+    ) -> None:
         trajectories_sorted = sorted(trajectories, key=lambda traj: traj.task_id)
         grouped_trajectories = [list(group) for key, group in groupby(trajectories_sorted, key=lambda traj: traj.task_id)]
         batch_size = self.exp_manager_config.summary_batch_size
@@ -114,29 +120,62 @@ class ExperienceManager(object):
         for group in grouped_trajectories:
             for i in range(0, len(group), batch_size):
                 all_batches.append(group[i:i + batch_size])
-        
+
+        if max_concurrent_batches is not None and max_concurrent_batches <= 1:
+            for batch_idx, batch in enumerate(all_batches, 1):
+                try:
+                    self.em_client.call_summarizer(
+                        trajectories=batch,
+                        workspace_id=self.reme_config.workspace_id,
+                        request_timeout=request_timeout,
+                        wait_indefinitely=wait_indefinitely,
+                    )
+                    logger.info(
+                        f"[SummaryInit] completed batch {batch_idx}/{len(all_batches)} "
+                        f"sequentially with {len(batch)} trajectories"
+                    )
+                except Exception as e:
+                    err_msg = str(e).lower()
+                    if "content_filter" in err_msg or "responsibleai" in err_msg or "self_harm" in err_msg:
+                        logger.warning(f"Content filter error in summary task (trajectories will be skipped): {e}")
+                    else:
+                        logger.error(f"Error in summary task: {e}")
+            return
+
+        executor = self.thread_pool
+        owns_executor = False
+        if max_concurrent_batches is not None and max_concurrent_batches > 1:
+            executor = ThreadPoolExecutor(max_workers=max_concurrent_batches)
+            owns_executor = True
+
         futures = []
-        for batch in all_batches:
-            future = self.thread_pool.submit(
-                self.em_client.call_summarizer,
-                trajectories=batch,
-                workspace_id=self.reme_config.workspace_id
-            )
-            futures.append(future)
-        
-        results = []
-        for future in as_completed(futures):
-            try:
-                result = future.result()
-                results.append(result)
-            except Exception as e:
-                err_msg = str(e).lower()
-                # 处理 Azure OpenAI 内容过滤错误
-                if "content_filter" in err_msg or "responsibleai" in err_msg or "self_harm" in err_msg:
-                    logger.warning(f"Content filter error in summary task (trajectories will be skipped): {e}")
-                    # 继续执行，不中断整个流程
-                else:
-                    logger.error(f"Error in summary task: {e}")
+        try:
+            for batch in all_batches:
+                future = executor.submit(
+                    self.em_client.call_summarizer,
+                    trajectories=batch,
+                    workspace_id=self.reme_config.workspace_id,
+                    request_timeout=request_timeout,
+                    wait_indefinitely=wait_indefinitely,
+                )
+                futures.append(future)
+
+            results = []
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                    results.append(result)
+                except Exception as e:
+                    err_msg = str(e).lower()
+                    # 处理 Azure OpenAI 内容过滤错误
+                    if "content_filter" in err_msg or "responsibleai" in err_msg or "self_harm" in err_msg:
+                        logger.warning(f"Content filter error in summary task (trajectories will be skipped): {e}")
+                        # 继续执行，不中断整个流程
+                    else:
+                        logger.error(f"Error in summary task: {e}")
+        finally:
+            if owns_executor:
+                executor.shutdown(wait=True)
         
         return
 

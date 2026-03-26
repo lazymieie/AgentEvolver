@@ -194,6 +194,10 @@ exp_manager:
   init_exp_only: false
   # which split to use when initializing the experience pool: ["validate", "train"]
   init_exp_pool_split: "validate"
+  # max concurrent summarize requests when initializing the experience pool; 1 means strictly sequential
+  init_exp_pool_max_workers: 1
+  # HTTP timeout in seconds for init experience-pool summarization; null means wait indefinitely
+  init_exp_summary_request_timeout: null
   # batch size for experience summarization
   summary_batch_size: 8
   reme:

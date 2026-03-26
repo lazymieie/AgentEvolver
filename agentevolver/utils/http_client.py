@@ -1,6 +1,6 @@
 import http
 import time
-from typing import Any
+from typing import Any, Optional
 
 import requests
 from loguru import logger
@@ -12,7 +12,7 @@ from agentevolver.enumeration.http_enum import HttpEnum
 class HttpClient(BaseModel):
     url: str = Field(default="")
     keep_alive: bool = Field(default=False, description="if true, use session to keep long connection")
-    timeout: int = Field(default=300, description="request timeout, second")
+    timeout: Optional[float] = Field(default=300, description="request timeout in seconds; None waits indefinitely")
     return_default_if_error: bool = Field(default=True)
 
     request_start_time: float = Field(default_factory=time.time)
@@ -44,7 +44,13 @@ class HttpClient(BaseModel):
                  json_data: dict = None,
                  headers: dict = None,
                  stream: bool = False,
+                 timeout: Optional[float] = None,
                  http_enum: HttpEnum | str = HttpEnum.POST):
+
+        if timeout is not None and timeout < 0:
+            effective_timeout = None
+        else:
+            effective_timeout = self.timeout if timeout is None else timeout
 
         if isinstance(http_enum, str):
             http_enum = HttpEnum(http_enum)
@@ -55,7 +61,7 @@ class HttpClient(BaseModel):
                                                             json=json_data,
                                                             headers=headers,
                                                             stream=stream,
-                                                            timeout=self.timeout)
+                                                            timeout=effective_timeout)
 
         elif http_enum is HttpEnum.GET:
             response: requests.Response = self._client.get(url=self.url,
@@ -63,7 +69,7 @@ class HttpClient(BaseModel):
                                                            json=json_data,
                                                            headers=headers,
                                                            stream=stream,
-                                                           timeout=self.timeout)
+                                                           timeout=effective_timeout)
 
         else:
             raise NotImplementedError
@@ -83,17 +89,25 @@ class HttpClient(BaseModel):
                 data: str | Any = None,
                 json_data: dict = None,
                 headers: dict = None,
+                timeout: Optional[float] = None,
                 http_enum: HttpEnum | str = HttpEnum.POST,
                 **kwargs):
 
         retry_sleep_time = self.retry_sleep_time
         for i in range(self.retry_max_count):
             try:
-                response = self._request(data=data, json_data=json_data, headers=headers, http_enum=http_enum)
+                response = self._request(
+                    data=data,
+                    json_data=json_data,
+                    headers=headers,
+                    timeout=timeout,
+                    http_enum=http_enum,
+                )
                 result = self.parse_result(response=response,
                                            data=data,
                                            json_data=json_data,
                                            headers=headers,
+                                           timeout=timeout,
                                            http_enum=http_enum,
                                            **kwargs)
                 return result
@@ -116,6 +130,7 @@ class HttpClient(BaseModel):
                        data: str = None,
                        json_data: dict = None,
                        headers: dict = None,
+                       timeout: Optional[float] = None,
                        http_enum: HttpEnum | str = HttpEnum.POST,
                        **kwargs):
 
@@ -126,6 +141,7 @@ class HttpClient(BaseModel):
                                          json_data=json_data,
                                          headers=headers,
                                          stream=True,
+                                         timeout=timeout,
                                          http_enum=http_enum)
                 request_context = {}
                 for iter_idx, line in enumerate(response.iter_lines()):

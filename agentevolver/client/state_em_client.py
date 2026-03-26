@@ -1,6 +1,6 @@
 import json
 import time
-from typing import Any, Sequence
+from typing import Any, Optional, Sequence
 
 from loguru import logger
 from pydantic import Field
@@ -62,6 +62,8 @@ class StateEMClient(HttpClient):
         self,
         states: Sequence[Trajectory | dict | list | str] | None = None,
         workspace_id: str = "default",
+        request_timeout: Optional[float] = None,
+        wait_indefinitely: bool = False,
         **kwargs,
     ):
         """
@@ -78,7 +80,12 @@ class StateEMClient(HttpClient):
             "workspace_id": workspace_id,
         }
         try:
-            response = self.request(json_data=json_data, headers={"Content-Type": "application/json"})
+            effective_timeout = -1 if wait_indefinitely else request_timeout
+            response = self.request(
+                json_data=json_data,
+                headers={"Content-Type": "application/json"},
+                timeout=effective_timeout,
+            )
             if response is None:
                 logger.warning("error call_summarizer for state memory: response is None")
                 return "", time.time() - start_time

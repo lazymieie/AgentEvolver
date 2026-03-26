@@ -1,6 +1,6 @@
 import time
 import json
-from typing import List
+from typing import List, Optional
 
 from loguru import logger
 from pydantic import Field
@@ -11,7 +11,7 @@ from agentevolver.utils.http_client import HttpClient
 
 class EMClient(HttpClient):
     base_url: str = Field(default="http://localhost:8001")
-    timeout: int = Field(default=1200, description="request timeout, second")
+    timeout: Optional[float] = Field(default=1200, description="request timeout in seconds; None waits indefinitely")
 
     def call_context_generator(self, trajectory: Trajectory, retrieve_top_k: int = 1, workspace_id: str = "default",
                                **kwargs) -> str:
@@ -45,7 +45,14 @@ class EMClient(HttpClient):
         trajectory.metadata["context_time_cost"] = time.time() - start_time  # ⭐ Log the time taken for the operation
         return response["answer"]  # ⭐ Return the merged experience from the response
 
-    def call_summarizer(self, trajectories: List[Trajectory], workspace_id: str = "default", **kwargs):
+    def call_summarizer(
+        self,
+        trajectories: List[Trajectory],
+        workspace_id: str = "default",
+        request_timeout: Optional[float] = None,
+        wait_indefinitely: bool = False,
+        **kwargs,
+    ):
         """
         Sends a request to the summary_task_memory endpoint with a list of trajectories and additional metadata.
 
@@ -66,7 +73,12 @@ class EMClient(HttpClient):
             # "metadata": kwargs
         }
         try:
-            response = self.request(json_data=json_data, headers={"Content-Type": "application/json"})  # ⭐ Send the request to the server
+            effective_timeout = -1 if wait_indefinitely else request_timeout
+            response = self.request(
+                json_data=json_data,
+                headers={"Content-Type": "application/json"},
+                timeout=effective_timeout,
+            )  # ⭐ Send the request to the server
             if response is None:
                 logger.warning("error call_summarizer: response is None")
                 return "", time.time() - start_time
