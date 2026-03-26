@@ -192,6 +192,8 @@ exp_manager:
   init_exp_before_training: false
   # whether to only init experience pool
   init_exp_only: false
+  # which split to use when initializing the experience pool: ["validate", "train"]
+  init_exp_pool_split: "validate"
   # batch size for experience summarization
   summary_batch_size: 8
   reme:

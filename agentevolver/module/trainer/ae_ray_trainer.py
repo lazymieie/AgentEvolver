@@ -1438,9 +1438,22 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
         """
         """
         exp_pool_mode = self.exp_manager.get_experience_pool_mode()
-        print(f"[InitExpPool] initialize {exp_pool_mode} experience pool before training")
-        for i, test_data in enumerate(self.val_dataloader):
-            test_batch = DataProto.from_single_dict(test_data)
+        init_split = str(self.config.exp_manager.get("init_exp_pool_split", "validate")).lower()
+        if init_split not in {"validate", "train"}:
+            raise ValueError(
+                f"Unsupported exp_manager.init_exp_pool_split={init_split!r}, expected 'validate' or 'train'."
+            )
+
+        rollout_mode = "validate" if init_split == "validate" else "sample"
+        dataloader = self.val_dataloader if init_split == "validate" else self.train_dataloader
+        epoch_prefix = "test.1" if init_split == "validate" else "train.init"
+
+        print(
+            f"[InitExpPool] initialize {exp_pool_mode} experience pool before training "
+            f"using {init_split} split"
+        )
+        for i, batch_data in enumerate(dataloader):
+            test_batch = DataProto.from_single_dict(batch_data)
 
             # we only do validation on rule-based rm
             if self.config.reward_model.enable and test_batch[0].non_tensor_batch["reward_model"]["style"] == "model":
@@ -1465,8 +1478,12 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                 "eos_token_id": self.tokenizer.eos_token_id,
                 "pad_token_id": self.tokenizer.pad_token_id,
                 "recompute_log_prob": False,
-                "do_sample": self.config.actor_rollout_ref.rollout.val_kwargs.do_sample,
-                "validate": True,
+                "do_sample": (
+                    self.config.actor_rollout_ref.rollout.val_kwargs.do_sample
+                    if init_split == "validate"
+                    else getattr(self.config.actor_rollout_ref.rollout, "do_sample", True)
+                ),
+                "validate": init_split == "validate",
             }
             print(f"test_gen_batch meta info: {test_gen_batch.meta_info}")
 
@@ -1579,10 +1596,15 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                 #             open_query=test_gen_batch.non_tensor_batch["extras"][i]['open_query'],
                 #             # evaluator=gen_batch.non_tensor_batch['extras'][i]['evaluator'], # avoid potential bugs
                 #          ) for i in range(len(test_gen_batch))]
-                task_exp_configs = self.exp_manager.get_complete_exp_configs(tasks, mode="validate")
-                print("=" * 10 + "start validate rollout" + "=" * 10)
-                trajectories = self.env_manager.rollout(tasks, task_exp_configs, mode="validate", epoch=f"test.1.{i}")  # ⭐ Execute the rollout to generate trajectories
-                print("=" * 10 + "end validate rollout" + "=" * 10)
+                task_exp_configs = self.exp_manager.get_complete_exp_configs(tasks, mode=rollout_mode)
+                print("=" * 10 + f" start {init_split} rollout " + "=" * 10)
+                trajectories = self.env_manager.rollout(
+                    tasks,
+                    task_exp_configs,
+                    mode=rollout_mode,
+                    epoch=f"{epoch_prefix}.{i}",
+                )  # ⭐ Execute the rollout to generate trajectories
+                print("=" * 10 + f" end {init_split} rollout " + "=" * 10)
                 self.async_rollout_manager.sleep()
 
             # summarize in batch: updating task/state experience pool according to the shared switch
