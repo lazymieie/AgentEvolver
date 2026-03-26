@@ -19,7 +19,16 @@ from loguru import logger
 def construct_alien_llm_chat_fn(config, rollout_config):
     """Construct alien LLM chat function using Azure OpenAI"""
     def alien_llm_chat_fn(messages, request_id=""):
-        max_try = 4
+        max_try = getattr(
+            config.actor_rollout_ref.rollout,
+            'context_template_alien_llm_max_try',
+            2
+        )
+        retry_sleep_s = getattr(
+            config.actor_rollout_ref.rollout,
+            'context_template_alien_llm_retry_sleep_s',
+            2
+        )
         
         # Get Azure OpenAI configuration from config or environment variables
         azure_api_key = getattr(
@@ -52,6 +61,11 @@ def construct_alien_llm_chat_fn(config, rollout_config):
             'context_template_alien_model_response_length',
             2048
         )
+        alien_request_timeout_s = getattr(
+            config.actor_rollout_ref.rollout,
+            'context_template_alien_llm_timeout_s',
+            60
+        )
         
         if not azure_api_key:
             raise ValueError("Missing Azure OpenAI API key. Set AZURE_OPENAI_API_KEY or context_template_alien_llm_api_key in config.")
@@ -61,20 +75,24 @@ def construct_alien_llm_chat_fn(config, rollout_config):
         # Normalize endpoint (remove trailing slash)
         azure_endpoint = azure_endpoint.rstrip("/")
         
+        client = AzureOpenAI(
+            api_key=azure_api_key,
+            azure_endpoint=azure_endpoint,
+            api_version=azure_api_version,
+        )
+
         for n_try in range(max_try):
             try:
-                client = AzureOpenAI(
-                    api_key=azure_api_key,
-                    azure_endpoint=azure_endpoint,
-                    api_version=azure_api_version,
-                )
-                
-                completion = client.chat.completions.create(
+                request_kwargs = dict(
                     model=alien_model_name,  # This is the deployment name in Azure OpenAI
                     messages=messages,
                     temperature=0,
                     max_tokens=alien_model_response_length,
                 )
+                if alien_request_timeout_s is not None:
+                    request_kwargs["timeout"] = alien_request_timeout_s
+
+                completion = client.chat.completions.create(**request_kwargs)
                 
                 message = completion.choices[0].message.model_dump(exclude_unset=True, exclude_none=True)
                 if "content" not in message: 
@@ -83,7 +101,7 @@ def construct_alien_llm_chat_fn(config, rollout_config):
             except Exception as e:
                 logger.bind(exception=True).exception(f"Error calling Azure OpenAI alien llm: {e}")
                 if n_try < max_try - 1:
-                    time.sleep(5)
+                    time.sleep(retry_sleep_s)
                     print(f"Error calling Azure OpenAI alien llm: {e}, retrying... ({n_try + 1}/{max_try})")
                 else:
                     raise
@@ -373,51 +391,51 @@ class SelfContextClipCMT(LinearThinkCMT):
             return
         self.clipped_before = True
 
-        _, generated_content = self.impl_new_request_from_previous_interaction(
-            new_message=ExtendedMessage(
-                author='user',
-                role='user',
-                content=dedent("""
-                    Your new task is to inspect each `Environment Response` and `Assistant Response` messages,
-                    and determine whether each message is useful for the next-step decision-making.
-                    Generate a json structure following the format below:
-                    ```json
-                    [
-                        {"id":"ARXXX or ERXXX", "useful":true or false, "action": "keep or remove or compress"},
-                        ...,
-                        {"id":"ARXXX or ERXXX", "useful":true or false, "action": "keep or remove or compress"},
-                    ]
-                    ```
-
-                    For example:
-                    ```json
-                    [
-                        {"id":"ER001", "useful":true, "action": "keep"},
-                        {"id":"AR001", "useful":false, "action": "remove"},
-                        ...
-                    ]
-                    ```
-
-                    Rules:
-                    - If the message contains useful information for future decisions, set "useful":true and "action":"keep".
-                    - If the message records important previous action or environment feedback, set "useful":true and "action":"keep".
-                    - If the message is very long and very redundant, set "useful":true and "action":"compress".
-                    - If the message is completely irrelevant, set "useful":false and "action":"remove". Note that important failures should be preserved, because learning from past is vital.
-                    - Ignore messages without id=XXX tags, where XXX is a 3-digit number.
-                    - Ensure the JSON is properly formatted and valid.
-                    - Remove or compress at least one message, because token limit is already reached.
-                    - At least remove (or compress) one message.
-                    - There must be no more than 2 "compress" actions in total, because "compress" action will cost considerable amount of time.
-
-                """),
-                token_generator='auto',
-                tokenizer=self.tokenizer,
-            ),
-            this_interaction=this_interaction,
-            strip_think=True,
-        )
-
         try:
+            _, generated_content = self.impl_new_request_from_previous_interaction(
+                new_message=ExtendedMessage(
+                    author='user',
+                    role='user',
+                    content=dedent("""
+                        Your new task is to inspect each `Environment Response` and `Assistant Response` messages,
+                        and determine whether each message is useful for the next-step decision-making.
+                        Generate a json structure following the format below:
+                        ```json
+                        [
+                            {"id":"ARXXX or ERXXX", "useful":true or false, "action": "keep or remove or compress"},
+                            ...,
+                            {"id":"ARXXX or ERXXX", "useful":true or false, "action": "keep or remove or compress"},
+                        ]
+                        ```
+
+                        For example:
+                        ```json
+                        [
+                            {"id":"ER001", "useful":true, "action": "keep"},
+                            {"id":"AR001", "useful":false, "action": "remove"},
+                            ...
+                        ]
+                        ```
+
+                        Rules:
+                        - If the message contains useful information for future decisions, set "useful":true and "action":"keep".
+                        - If the message records important previous action or environment feedback, set "useful":true and "action":"keep".
+                        - If the message is very long and very redundant, set "useful":true and "action":"compress".
+                        - If the message is completely irrelevant, set "useful":false and "action":"remove". Note that important failures should be preserved, because learning from past is vital.
+                        - Ignore messages without id=XXX tags, where XXX is a 3-digit number.
+                        - Ensure the JSON is properly formatted and valid.
+                        - Remove or compress at least one message, because token limit is already reached.
+                        - At least remove (or compress) one message.
+                        - There must be no more than 2 "compress" actions in total, because "compress" action will cost considerable amount of time.
+
+                    """),
+                    token_generator='auto',
+                    tokenizer=self.tokenizer,
+                ),
+                this_interaction=this_interaction,
+                strip_think=True,
+            )
+
             llm_output_content = generated_content = generated_content.strip()
             if llm_output_content.count("```") == 2:
                 extracted_content: str = llm_output_content.split("```")[1].strip()

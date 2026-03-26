@@ -23,7 +23,16 @@ from agentevolver.utils.markdown_parser import read_markdown_and_extract_section
 def construct_alien_llm_chat_fn(config, rollout_config):
     """Construct alien LLM chat function for memory extraction using Azure OpenAI"""
     def alien_llm_chat_fn(messages, request_id=""):
-        max_try = 4
+        max_try = getattr(
+            config.actor_rollout_ref.rollout,
+            'context_template_alien_llm_max_try',
+            2
+        )
+        retry_sleep_s = getattr(
+            config.actor_rollout_ref.rollout,
+            'context_template_alien_llm_retry_sleep_s',
+            2
+        )
         
         # Get Azure OpenAI configuration from config or environment variables
         azure_api_key = getattr(
@@ -56,6 +65,11 @@ def construct_alien_llm_chat_fn(config, rollout_config):
             'context_template_alien_model_response_length',
             2048
         )
+        alien_request_timeout_s = getattr(
+            config.actor_rollout_ref.rollout,
+            'context_template_alien_llm_timeout_s',
+            60
+        )
         
         if not azure_api_key:
             raise ValueError("Missing Azure OpenAI API key. Set AZURE_OPENAI_API_KEY or context_template_alien_llm_api_key in config.")
@@ -65,20 +79,24 @@ def construct_alien_llm_chat_fn(config, rollout_config):
         # Normalize endpoint (remove trailing slash)
         azure_endpoint = azure_endpoint.rstrip("/")
         
+        client = AzureOpenAI(
+            api_key=azure_api_key,
+            azure_endpoint=azure_endpoint,
+            api_version=azure_api_version,
+        )
+
         for n_try in range(max_try):
             try:
-                client = AzureOpenAI(
-                    api_key=azure_api_key,
-                    azure_endpoint=azure_endpoint,
-                    api_version=azure_api_version,
-                )
-                
-                completion = client.chat.completions.create(
+                request_kwargs = dict(
                     model=alien_model_name,  # This is the deployment name in Azure OpenAI
                     messages=messages,
                     temperature=0,
                     max_tokens=alien_model_response_length,
                 )
+                if alien_request_timeout_s is not None:
+                    request_kwargs["timeout"] = alien_request_timeout_s
+
+                completion = client.chat.completions.create(**request_kwargs)
                 
                 message = completion.choices[0].message.model_dump(exclude_unset=True, exclude_none=True)
                 if "content" not in message: 
@@ -87,7 +105,7 @@ def construct_alien_llm_chat_fn(config, rollout_config):
             except Exception as e:
                 logger.bind(exception=True).exception(f"Error calling Azure OpenAI alien llm: {e}")
                 if n_try < max_try - 1:
-                    time.sleep(5)
+                    time.sleep(retry_sleep_s)
                     print(f"Error calling Azure OpenAI alien llm: {e}, retrying... ({n_try + 1}/{max_try})")
                 else:
                     raise
@@ -317,10 +335,15 @@ class MemoryNewCMT(LinearThinkCMT):
         
         # Check token threshold
         this_interaction = copy.deepcopy(this_interaction)
-        if self._get_seq_length(self.to_role_content(this_interaction)) < self.memory_extract_trigger_token_num:
+        interaction_messages = self.to_role_content(this_interaction)
+        interaction_seq_len = self._get_seq_length(interaction_messages)
+        if interaction_seq_len < self.memory_extract_trigger_token_num:
             return
         
         self.memory_extracted_before = True
+        self.metadata["memory_extraction_triggered"] = True
+        self.metadata["memory_extraction_seq_len"] = interaction_seq_len
+        self.metadata["memory_extraction_message_count"] = len(interaction_messages)
         
         # Get recent LLM and env messages for extraction
         recent_llm_msgs = [msg for msg in this_interaction if msg.author == "llm"]
@@ -329,52 +352,52 @@ class MemoryNewCMT(LinearThinkCMT):
         if len(recent_llm_msgs) == 0 or len(recent_env_msgs) == 0:
             return
         
-        # Use alien LLM to extract 4 sections from recent interactions
-        _, extracted_content = self.impl_new_request_from_previous_interaction(
-            new_message=ExtendedMessage(
-                author='user',
-                role='user',
-                content=dedent("""
-                    Your task is to analyze the recent conversation and extract key information in the following 4 sections:
-                    
-                    1. **current step**: Summarize what step we are at and what we're trying to accomplish
-                    2. **previous instruction code**: Extract the code/action that was executed in the previous step
-                    3. **relevant environment feedback**: Extract all useful information from environment responses, including:
-                       - Account credentials, keys, access tokens
-                       - Important state information
-                       - Error messages or warnings
-                       - Any data that might be needed in future steps
-                    4. **next-step instruction code**: Based on the context, what code/action should be executed next?
-                    
-                    Format your response as markdown with these 4 sections:
-                    ```markdown
-                    # current step
-                    [your summary here]
-                    
-                    # previous instruction code
-                    ```[language]
-                    [code here]
-                    ```
-                    
-                    # relevant environment feedback
-                    [extracted feedback here]
-                    
-                    # next-step instruction code
-                    ```[language]
-                    [code here]
-                    ```
-                    ```
-                    
-                    Important: Extract ALL useful information from environment feedback, as it will be lost otherwise.
-                """),
-                token_generator='auto',
-                tokenizer=self.tokenizer,
-            ),
-            this_interaction=this_interaction,
-            strip_think=True,
-        )
-        
         try:
+            # Keep rollout alive even if auxiliary memory extraction times out.
+            _, extracted_content = self.impl_new_request_from_previous_interaction(
+                new_message=ExtendedMessage(
+                    author='user',
+                    role='user',
+                    content=dedent("""
+                        Your task is to analyze the recent conversation and extract key information in the following 4 sections:
+                        
+                        1. **current step**: Summarize what step we are at and what we're trying to accomplish
+                        2. **previous instruction code**: Extract the code/action that was executed in the previous step
+                        3. **relevant environment feedback**: Extract all useful information from environment responses, including:
+                           - Account credentials, keys, access tokens
+                           - Important state information
+                           - Error messages or warnings
+                           - Any data that might be needed in future steps
+                        4. **next-step instruction code**: Based on the context, what code/action should be executed next?
+                        
+                        Format your response as markdown with these 4 sections:
+                        ```markdown
+                        # current step
+                        [your summary here]
+                        
+                        # previous instruction code
+                        ```[language]
+                        [code here]
+                        ```
+                        
+                        # relevant environment feedback
+                        [extracted feedback here]
+                        
+                        # next-step instruction code
+                        ```[language]
+                        [code here]
+                        ```
+                        ```
+                        
+                        Important: Extract ALL useful information from environment feedback, as it will be lost otherwise.
+                    """),
+                    token_generator='auto',
+                    tokenizer=self.tokenizer,
+                ),
+                this_interaction=this_interaction,
+                strip_think=True,
+            )
+
             # Parse extracted content
             if extracted_content.count("```") >= 2:
                 # Extract markdown content
@@ -439,8 +462,10 @@ class MemoryNewCMT(LinearThinkCMT):
             logger.info(f"Memory extracted and added. Total memory messages: {len(self.filter_context_via_author('memory'))}")
             
         except Exception as e:
+            self.metadata["memory_extraction_failed"] = True
+            self.metadata["memory_extraction_error"] = f"{type(e).__name__}: {e}"
             logger.bind(exception=True).exception(f"Error extracting memory: {e}")
-            print(f"Error extracting memory: {e}")
+            print(f"Error extracting memory: {e}; skip memory extraction for this trajectory.")
 
     def save_llm_output(self, llm_output, input_msg_ref):
         """
@@ -480,4 +505,3 @@ class MemoryNewCMT(LinearThinkCMT):
             return last_llm_content
         
         return next_step_code
-
