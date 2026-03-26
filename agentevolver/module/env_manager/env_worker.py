@@ -56,12 +56,14 @@ class EnvWorker(object):
         Returns:
             Trajectory: The generated trajectory from the task execution.
         """
-
+        traj_cmt: Trajectory | None = None
+        instance_created = False
         try:
             init_response = self.env.create_instance(env_type=self.env_type,
                                                     task_id=self.task_id,
                                                     instance_id=self.instance_id,
                                                     params={'is_open_query': self.is_open_query})
+            instance_created = True
 
             init_messages: list[dict] = init_response["state"]
             # logger.debug(
@@ -137,7 +139,7 @@ class EnvWorker(object):
             #     traj_exp_config
             # )
 
-            traj_cmt: Trajectory = agent_flow.execute(
+            traj_cmt = agent_flow.execute(
                 context_manager=traj_cmt,
                 init_messages=init_messages,
                 env=self.env,
@@ -152,18 +154,21 @@ class EnvWorker(object):
                 query=self.task.query,
                 **kwargs
             )  # ⭐ Execute the task and generate the trajectory
-            # logger.debug(
-            #     "[EnvWorker] AFTER agent_flow.execute | "
-            #     f"trajectory type={type(traj_cmt)}"
-            # )
-            self.env.release_instance(self.instance_id)
-
         except Exception as e:
             import traceback
             traceback.print_exc()
             raise RuntimeError(
-                f"env.create_instance failed! error={repr(e)}"
+                f"env_worker.execute failed for task_id={self.task_id}, "
+                f"instance_id={self.instance_id}, error={repr(e)}"
             ) from e
+        finally:
+            if instance_created:
+                try:
+                    self.env.release_instance(self.instance_id)
+                except Exception as release_error:
+                    logger.warning(
+                        f"failed to release env instance {self.instance_id} for task {self.task_id}: {release_error!r}"
+                    )
 
-
+        assert traj_cmt is not None
         return traj_cmt

@@ -126,6 +126,8 @@ class AgentFlow(BaseAgentFlow):
         request_id: str = ""
         err_in_generating=False
         err_in_env = False
+        completed_env_steps = 0
+        stop_reason: str | None = None
 
         traj_id = f"{data_id}_{rollout_id}" if data_id and rollout_id else f"{task_id}_unknown"
 
@@ -177,6 +179,7 @@ class AgentFlow(BaseAgentFlow):
             tmux['step'][thread_index] = act_step
             if (stop is not None) and stop[thread_index]: # Check if the thread should stop (because other threads have completed, making this thread useless)
                 self.cmt.discarded = True
+                stop_reason = "discarded_by_parallel_stop"
                 break
 
             # 3. ⏮️ get previous steps
@@ -195,6 +198,7 @@ class AgentFlow(BaseAgentFlow):
                 )
 
                 self.cmt.is_terminated = False # trajectory not finished.
+                stop_reason = "context_overflow"
                 break
             # print("debug：act_step")
             # print(act_step)
@@ -276,6 +280,7 @@ class AgentFlow(BaseAgentFlow):
                         prompt_without_exp=latest_prompt_without_exp,
                         llm_output=llm_output,
                     )
+                    stop_reason = "experience_guidance_retry_exceeded"
                     break
 
                 if generation_succeeded and transient_injection_applied:
@@ -294,6 +299,7 @@ class AgentFlow(BaseAgentFlow):
                     )
             if (stop is not None) and stop[thread_index]:  # Check if the thread should stop (because other threads have completed, making this thread useless)
                 self.cmt.discarded = True
+                stop_reason = "discarded_by_parallel_stop"
                 break
             
             # 6. 💾 save llm output
@@ -330,13 +336,25 @@ class AgentFlow(BaseAgentFlow):
             state = env_output["state"]
             state.pop('tool_calls', None)
             self.cmt.save_env_output(state, input_msg_ref=step_input_message_arr, add_nothink=add_nothink)  # ⭐ Save the environment output
+            completed_env_steps = act_step + 1
 
             # 9. 🔚 determine if the episode is terminated
             self.cmt.is_terminated = env_output["is_terminated"]
             if self.cmt.is_terminated or err_in_env:
+                if err_in_env:
+                    stop_reason = "env_error"
+                elif self.cmt.is_terminated:
+                    stop_reason = "env_terminated"
                 break
+        else:
+            stop_reason = "max_steps_reached"
 
         tmux['step'][thread_index] = -1
+        self.cmt.metadata["completed_env_steps"] = completed_env_steps
+        self.cmt.metadata["max_allowed_steps"] = self.max_steps
+        self.cmt.metadata["hit_max_steps"] = (stop_reason == "max_steps_reached")
+        if stop_reason is not None:
+            self.cmt.metadata["stop_reason"] = stop_reason
 
         if self._reward_calculator is not None:
             grader_res = self._reward_calculator.calculate_reward(self.cmt, env, instance_id)  # ⭐ Calculate the reward using the reward calculator

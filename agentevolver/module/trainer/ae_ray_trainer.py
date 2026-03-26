@@ -1082,6 +1082,9 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
         sample_scores = []
         # 用taskid进行区分 
         sample_task_ids = []
+        trajectory_metric_task_ids = []
+        trajectory_metric_data_sources = []
+        trajectory_metric_scores = []
 
         # --- realtime reward stats ---
         total_r0 = 0
@@ -1237,6 +1240,10 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                 print("\n==================== DEBUG tasks ====================")
                 print("total tasks:", len(tasks))
                 print("example task:", tasks[0].task_id, tasks[0].query)
+                batch_data_sources = np.asarray(
+                    test_batch.non_tensor_batch.get("data_source", ["unknown"] * len(tasks)),
+                    dtype=object,
+                )
 
                 # # 只用前 debug_max_tasks 个 task 做 rollout
                 # if len(tasks) > debug_max_tasks:
@@ -1254,6 +1261,19 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                     epoch=f"test.1.{test_i}",
                 )
                 print("=" * 10 + " end validate rollout " + "=" * 10)
+
+                # Multi-turn trajectories may be tokenized into multiple training groups.
+                # Validation @k metrics should stay at rollout granularity instead of sample granularity.
+                for traj in trajectories:
+                    try:
+                        data_source = str(batch_data_sources[int(traj.data_id)])
+                    except Exception:
+                        data_source = "unknown"
+                    trajectory_metric_data_sources.append(data_source)
+                    trajectory_metric_task_ids.append(str(traj.task_id))
+                    trajectory_metric_scores.append(
+                        float(traj.reward.outcome) if traj.reward is not None else 0.0
+                    )
 
                 test_output_gen_batch = self.env_manager.to_dataproto(trajectories)
                 self.async_rollout_manager.sleep()
@@ -1414,11 +1434,14 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
             f"len(all_task_ids)={len(all_task_ids)} != len(sample_scores)={len(sample_scores)}"
 
 
+        if len(trajectory_metric_scores) == 0:
+            raise RuntimeError("No trajectory-level validation rewards were collected.")
+
         data_src2var2metric2val = process_validation_metrics(
-            data_sources=data_sources,
-            sample_inputs=all_task_ids,
-            infos_dict=reward_extra_infos_dict,
-        )  # ⭐ Process the validation metrics for different data sources # ⭐ Process the validation metrics for different data sources
+            data_sources=trajectory_metric_data_sources,
+            sample_inputs=trajectory_metric_task_ids,
+            infos_dict={"reward": trajectory_metric_scores},
+        )  # ⭐ Keep validation @k metrics aligned with rollout-level rewards.
         metric_dict = {}
         for data_source, var2metric2val in data_src2var2metric2val.items():
             core_var = "acc" if "acc" in var2metric2val else "reward"

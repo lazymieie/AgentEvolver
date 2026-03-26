@@ -332,6 +332,8 @@ class ParallelEnvManager(object):
         traj_cmt_array = []
         rollout_n = self.rollout_config.val_kwargs.n if mode == "validate" else self.rollout_n
         future_to_params: Dict[Future, Tuple[Task, TrajExpConfig, str, str, str, int, dict, list[bool]]] = {}
+        resubmit_counts: Dict[int, int] = {}
+        max_resubmit_attempts = int(getattr(self.rollout_config, "max_resubmit_attempts", 1))
 
         # Make epoch available to agentscope workflows (without changing rollout_env_worker behavior)
         # This enables workflows to organize logs under logs/{experiment_name}/{epoch}/...
@@ -375,6 +377,8 @@ class ParallelEnvManager(object):
                     # get the corresponding params, and remove it from the dict
                     params = future_to_params.pop(future)
                     self.step_status_printer(tmux) # cc: i don't know what this is
+                    thread_index = params[5]
+                    resubmit_counts.setdefault(thread_index, 0)
 
                     # 4. get the results and handle errors
                     try:
@@ -383,27 +387,46 @@ class ParallelEnvManager(object):
                         # if the result has metadata error, try to recover
                         if 'error' in result.metadata:
                             error_msg = result.metadata['error']
-                            logger.warning(f"Task {params[1]}-{params[2]} failed with metadata error: {error_msg}. Retrying... \n Task: {params[0]}")
+                            if resubmit_counts[thread_index] >= max_resubmit_attempts:
+                                raise RuntimeError(
+                                    f"rollout metadata error persisted after {resubmit_counts[thread_index]} outer resubmits: {error_msg}"
+                                )
+                            resubmit_counts[thread_index] += 1
+                            logger.warning(
+                                f"Task {params[1]}-{params[2]} failed with metadata error: {error_msg}. "
+                                f"Outer resubmit {resubmit_counts[thread_index]}/{max_resubmit_attempts}. \n Task: {params[0]}"
+                            )
                             # as most errors are internet error or quota, we wait before resubmit it
                             time.sleep(30)
                             # resubmit and reset tmux and stop
-                            thread_index=params[5]
-                            for k in tmux: tmux[k][thread_index] = 0
+                            for k in tmux:
+                                tmux[k][thread_index] = 0
                             stop[thread_index]=False
                             new_future = executor.submit(self.rollout_env_worker, *params) # type: ignore
                             future_to_params[new_future] = params
                             continue
 
                         # 5. if the task is successful, add it to the result list
+                        resubmit_counts.pop(thread_index, None)
                         traj_cmt_array.append(result)
                         pbar.update(1) # update progress bar when success
 
                     except Exception as e:
                         # handle the uncaught exception
-                        logger.error(f"Task {params[1]}-{params[2]} raised an exception: {e}. Retrying... \n Task: {params[0]}")
+                        if resubmit_counts[thread_index] >= max_resubmit_attempts:
+                            logger.error(
+                                f"Task {params[1]}-{params[2]} raised an exception after "
+                                f"{resubmit_counts[thread_index]} outer resubmits: {e}. \n Task: {params[0]}"
+                            )
+                            raise
+                        resubmit_counts[thread_index] += 1
+                        logger.error(
+                            f"Task {params[1]}-{params[2]} raised an exception: {e}. "
+                            f"Outer resubmit {resubmit_counts[thread_index]}/{max_resubmit_attempts}. \n Task: {params[0]}"
+                        )
                         # resubmit, and reset tmux and stop
-                        thread_index=params[5]
-                        for k in tmux: tmux[k][thread_index] = 0
+                        for k in tmux:
+                            tmux[k][thread_index] = 0
                         stop[thread_index]=False
                         new_future = executor.submit(self.rollout_env_worker, *params) # type: ignore
                         future_to_params[new_future] = params
