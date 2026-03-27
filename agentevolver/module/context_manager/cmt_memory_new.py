@@ -424,20 +424,24 @@ class MemoryNewCMT(LinearThinkCMT):
         interaction_seq_len = self._get_seq_length(interaction_messages)
         if interaction_seq_len < self.memory_extract_trigger_token_num:
             return
-        
-        self.memory_extracted_before = True
-        self.metadata["memory_extraction_triggered"] = True
-        self.metadata["memory_extraction_seq_len"] = interaction_seq_len
-        self.metadata["memory_extraction_message_count"] = len(interaction_messages)
+
         before_rewrite_context = copy.deepcopy(self.full_context)
-        
-        # Get recent LLM and env messages for extraction
-        recent_llm_msgs = [msg for msg in this_interaction if msg.author == "llm"]
+
+        # Get recent LLM/env messages for extraction.
+        # Historical assistant messages in the prepared interaction are wrapped as
+        # llm(do_not_train), while the current step remains llm.
+        recent_llm_msgs = [
+            msg for msg in this_interaction if msg.author in {"llm", "llm(do_not_train)"}
+        ]
         recent_env_msgs = [msg for msg in this_interaction if msg.author == "env"]
-        
+
         if len(recent_llm_msgs) == 0 or len(recent_env_msgs) == 0:
+            logger.info(
+                "Memory extraction deferred because the current interaction does not yet "
+                "contain both assistant output and environment feedback."
+            )
             return
-        
+
         try:
             # Keep rollout alive even if auxiliary memory extraction times out.
             _, extracted_content = self.impl_new_request_from_previous_interaction(
@@ -528,12 +532,15 @@ class MemoryNewCMT(LinearThinkCMT):
                 tokenizer=self.tokenizer,
             )
             self.full_context += [ext_msg_memory]
-            
+
             # Optionally: mark old LLM/env messages as discard to save tokens
             # (similar to context_clip's remove action)
-            recent_llm_uuids = {msg.uuid for msg in recent_llm_msgs[:-1]}  # Keep last one
-            recent_env_uuids = {msg.uuid for msg in recent_env_msgs[:-1]}  # Keep last one
-            
+            def resolve_source_uuid(msg: ExtendedMessage) -> str:
+                return msg.build_from_uuid if msg.build_from_uuid else msg.uuid
+
+            recent_llm_uuids = {resolve_source_uuid(msg) for msg in recent_llm_msgs[:-1]}  # Keep last one
+            recent_env_uuids = {resolve_source_uuid(msg) for msg in recent_env_msgs[:-1]}  # Keep last one
+
             for index, msg in enumerate(self.full_context):
                 if msg.uuid in recent_llm_uuids or msg.uuid in recent_env_uuids:
                     if msg.author not in ["memory"]:  # Don't discard memory
@@ -545,6 +552,10 @@ class MemoryNewCMT(LinearThinkCMT):
                             tokenizer=self.tokenizer,
                         )
 
+            self.memory_extracted_before = True
+            self.metadata["memory_extraction_triggered"] = True
+            self.metadata["memory_extraction_seq_len"] = interaction_seq_len
+            self.metadata["memory_extraction_message_count"] = len(interaction_messages)
             after_rewrite_context = copy.deepcopy(self.full_context)
             self._record_memory_rewrite(
                 before_context=before_rewrite_context,
