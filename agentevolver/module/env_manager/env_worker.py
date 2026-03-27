@@ -109,6 +109,8 @@ class EnvWorker(object):
             traj_cmt.rollout_id = rollout_id
             traj_cmt.task_id = self.task_id
             traj_cmt.instance_id = self.instance_id
+            if hasattr(agent_flow, "artifact_recorder"):
+                traj_cmt.artifact_recorder = agent_flow.artifact_recorder
             # traj_cmt.task_train_exp_mode = self.task.metadata.get("task_train_exp_mode")
             # traj_cmt.metadata["task_train_exp_mode"] = task_train_exp_mode
             assert self.task.query is not None

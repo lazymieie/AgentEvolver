@@ -145,6 +145,54 @@ class MemoryNewCMT(LinearThinkCMT):
         prompt_text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         return len(self.tokenizer(prompt_text, return_tensors="pt", padding=False)["input_ids"][0])
 
+    def _serialize_context_messages(self, messages: List[ExtendedMessage]) -> List[dict]:
+        serialized = []
+        for msg in messages:
+            serialized.append(
+                {
+                    "author": msg.author,
+                    "role": msg.role,
+                    "content": msg.content,
+                    "content_for_future": msg.content_for_future,
+                    "uuid": msg.uuid,
+                    "build_from_uuid": msg.build_from_uuid,
+                }
+            )
+        return serialized
+
+    def _record_memory_rewrite(
+        self,
+        *,
+        before_context: List[ExtendedMessage],
+        after_context: List[ExtendedMessage],
+        extracted_markdown: str,
+        memory_construct: str,
+        trigger_seq_len: int,
+    ) -> None:
+        artifact_recorder = getattr(self, "artifact_recorder", None)
+        if artifact_recorder is None or not getattr(artifact_recorder, "enable", False):
+            return
+
+        try:
+            record = {
+                "task_id": getattr(self, "task_id", ""),
+                "data_id": getattr(self, "data_id", ""),
+                "rollout_id": getattr(self, "rollout_id", ""),
+                "instance_id": getattr(self, "instance_id", ""),
+                "trigger_seq_len": trigger_seq_len,
+                "memory_extract_trigger_token_num": self.memory_extract_trigger_token_num,
+                "before_full_context": self._serialize_context_messages(before_context),
+                "after_full_context": self._serialize_context_messages(after_context),
+                "before_next_llm_context": self.to_role_content(before_context),
+                "after_next_llm_context": self.prepare_next_llm_context(),
+                "extracted_markdown": extracted_markdown,
+                "memory_construct": memory_construct,
+                "memory_count_after": len(self.filter_context_via_author("memory")),
+            }
+            artifact_recorder.write_jsonl("memory_rewrites", record, force=True)
+        except Exception as e:
+            logger.warning(f"Failed to record memory rewrite artifact: {e!r}")
+
     def prepare_next_llm_context(self):
         """
         Prepares the next context for the LLM.
@@ -344,6 +392,7 @@ class MemoryNewCMT(LinearThinkCMT):
         self.metadata["memory_extraction_triggered"] = True
         self.metadata["memory_extraction_seq_len"] = interaction_seq_len
         self.metadata["memory_extraction_message_count"] = len(interaction_messages)
+        before_rewrite_context = copy.deepcopy(self.full_context)
         
         # Get recent LLM and env messages for extraction
         recent_llm_msgs = [msg for msg in this_interaction if msg.author == "llm"]
@@ -458,6 +507,15 @@ class MemoryNewCMT(LinearThinkCMT):
                             token_generator='auto',
                             tokenizer=self.tokenizer,
                         )
+
+            after_rewrite_context = copy.deepcopy(self.full_context)
+            self._record_memory_rewrite(
+                before_context=before_rewrite_context,
+                after_context=after_rewrite_context,
+                extracted_markdown=extracted_markdown,
+                memory_construct=memory_construct,
+                trigger_seq_len=interaction_seq_len,
+            )
             
             logger.info(f"Memory extracted and added. Total memory messages: {len(self.filter_context_via_author('memory'))}")
             
