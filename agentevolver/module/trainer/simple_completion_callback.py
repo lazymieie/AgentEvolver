@@ -27,11 +27,20 @@ class SimpleCompletionCallback(CompletionCallback):
         if "content" not in message:
             message["content"] = "vllm failed"
 
-        if message['content'] == '' or completions.choices[0].finish_reason != 'stop':
-            logger.warning(str(completions.choices[0].finish_reason))
-            logger.bind(bad_case=True).error('empty content or non-stop finish reason')
+        finish_reason = completions.choices[0].finish_reason
+        if message['content'] == '':
+            logger.warning(str(finish_reason))
+            logger.bind(bad_case=True).error('empty content from completion')
             logger.bind(bad_case=True).error(str(completions.choices[0]))
             message['content'] = 'im_end'  # fill a token when vllm failed
+        elif finish_reason != 'stop':
+            logger.warning(str(finish_reason))
+            if finish_reason == 'length':
+                logger.bind(truncated=True).warning('completion truncated (finish_reason=length); keeping partial content')
+            else:
+                logger.bind(bad_case=True).error('non-stop finish reason')
+                logger.bind(bad_case=True).error(str(completions.choices[0]))
+                message['content'] = 'im_end'  # fill a token when finish reason is abnormal
 
         t = {"role": message["role"], "request_id":completions.id, "content": message['content'], "tokens": [TokenAndProb(t) for t in completions.choices[0].logprobs.content]}
         messages.append(t)
