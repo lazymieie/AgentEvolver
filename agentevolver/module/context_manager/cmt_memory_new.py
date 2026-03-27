@@ -15,14 +15,21 @@ from agentevolver.module.context_manager.cmt_linear_think import ExtendedMessage
 from agentevolver.module.context_manager.cmt_linear import find_sublist_indices, replace_token_ids
 from best_logger import register_logger, print_dict, print_nested, NestedJsonItem, SeqItem
 from textwrap import dedent
-from openai import AzureOpenAI
+from openai import AzureOpenAI, OpenAI
 from loguru import logger
 from agentevolver.utils.markdown_parser import read_markdown_and_extract_sections
+from omegaconf import OmegaConf
 
 
 def construct_alien_llm_chat_fn(config, rollout_config):
     """Construct alien LLM chat function for memory extraction using Azure OpenAI"""
     def alien_llm_chat_fn(messages, request_id=""):
+        def select(path: str, default=None):
+            try:
+                return OmegaConf.select(config, path, default=default)
+            except Exception:
+                return default
+
         max_try = getattr(
             config.actor_rollout_ref.rollout,
             'context_template_alien_llm_max_try',
@@ -34,13 +41,25 @@ def construct_alien_llm_chat_fn(config, rollout_config):
             2
         )
         
-        # Get Azure OpenAI configuration from config or environment variables
-        azure_api_key = getattr(
+        provider = getattr(
+            config.actor_rollout_ref.rollout,
+            'context_template_alien_llm_provider',
+            None
+        ) or select("llm.default.provider") or os.getenv("ALIEN_LLM_PROVIDER")
+
+        # Get compatible API configuration from config or environment variables
+        alien_api_key = getattr(
             config.actor_rollout_ref.rollout, 
             'context_template_alien_llm_api_key', 
             None
-        ) or os.getenv("AZURE_OPENAI_API_KEY")
+        ) or select("llm.default.api_key") or os.getenv("OPENAI_API_KEY") or os.getenv("AZURE_OPENAI_API_KEY")
         
+        alien_base_url = getattr(
+            config.actor_rollout_ref.rollout,
+            'context_template_alien_llm_base_url',
+            None
+        ) or select("llm.default.base_url") or os.getenv("OPENAI_BASE_URL")
+
         azure_endpoint = getattr(
             config.actor_rollout_ref.rollout,
             'context_template_alien_llm_endpoint',
@@ -58,7 +77,7 @@ def construct_alien_llm_chat_fn(config, rollout_config):
             config.actor_rollout_ref.rollout,
             'context_template_alien_llm_model',
             None
-        ) or os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME") or "gpt-4o-2"
+        ) or select("llm.default.model_name") or os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME") or os.getenv("OPENAI_MODEL_NAME") or "gpt-4o-2"
         
         alien_model_response_length = getattr(
             config.actor_rollout_ref.rollout,
@@ -71,24 +90,42 @@ def construct_alien_llm_chat_fn(config, rollout_config):
             60
         )
         
-        if not azure_api_key:
-            raise ValueError("Missing Azure OpenAI API key. Set AZURE_OPENAI_API_KEY or context_template_alien_llm_api_key in config.")
-        if not azure_endpoint:
-            raise ValueError("Missing Azure OpenAI endpoint. Set AZURE_OPENAI_ENDPOINT or context_template_alien_llm_endpoint in config.")
-        
-        # Normalize endpoint (remove trailing slash)
-        azure_endpoint = azure_endpoint.rstrip("/")
-        
-        client = AzureOpenAI(
-            api_key=azure_api_key,
-            azure_endpoint=azure_endpoint,
-            api_version=azure_api_version,
+        provider_norm = str(provider or "").strip().lower().replace("-", "_")
+        use_openai_compatible = provider_norm in {"openai_compatible", "openai", "compatible"} or (
+            alien_base_url is not None and azure_endpoint is None
         )
+
+        if not alien_api_key:
+            raise ValueError(
+                "Missing alien LLM API key. Set context_template_alien_llm_api_key, "
+                "llm.default.api_key, OPENAI_API_KEY, or AZURE_OPENAI_API_KEY."
+            )
+
+        if use_openai_compatible:
+            if not alien_base_url:
+                raise ValueError(
+                    "Missing alien LLM base_url for openai-compatible provider. "
+                    "Set context_template_alien_llm_base_url, llm.default.base_url, or OPENAI_BASE_URL."
+                )
+            client = OpenAI(
+                api_key=alien_api_key,
+                base_url=alien_base_url.rstrip("/"),
+            )
+        else:
+            if not azure_endpoint:
+                raise ValueError(
+                    "Missing Azure endpoint for alien LLM. Set context_template_alien_llm_endpoint or AZURE_OPENAI_ENDPOINT."
+                )
+            client = AzureOpenAI(
+                api_key=alien_api_key,
+                azure_endpoint=azure_endpoint.rstrip("/"),
+                api_version=azure_api_version,
+            )
 
         for n_try in range(max_try):
             try:
                 request_kwargs = dict(
-                    model=alien_model_name,  # This is the deployment name in Azure OpenAI
+                    model=alien_model_name,
                     messages=messages,
                     temperature=0,
                     max_tokens=alien_model_response_length,

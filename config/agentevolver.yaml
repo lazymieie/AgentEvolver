@@ -27,7 +27,15 @@ actor_rollout_ref:
     use_remove_padding: true
     enable_gradient_checkpointing: true
   rollout:
+    # Alien LLM used by context templates such as memory/context_clip.
+    # Defaults to OpenAI-compatible; base_url/api_key/model can still fall back to llm.default.* or OPENAI_* env vars.
+    context_template_alien_llm_provider: openai_compatible
+    context_template_alien_llm_base_url: null
+    context_template_alien_llm_api_key: null
     context_template_alien_llm_model : gpt-4o-2
+    context_template_alien_llm_timeout_s: 60
+    context_template_alien_llm_max_try: 4
+    context_template_alien_llm_retry_sleep_s: 2
     context_template_clip_trigger_token_num : 20000
     train_history_infer_token: false 
     use_qwen3: false                      
