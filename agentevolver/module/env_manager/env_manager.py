@@ -474,7 +474,17 @@ class ParallelEnvManager(object):
         extras = {
             "add_exp": cmt.metadata.get("add_exp", None),  # ⭐ Retrieves the 'add_exp' value from metadata
             "task_train_expmode": cmt.metadata.get("task_train_exp_mode", None),  # ⭐ Retrieves the 'task_train_exp_mode' value from metadata
-            "experience_list": cmt.metadata.get("experience_list", [])  # ⭐ Retrieves the 'experience' list from metadata
+            "experience_list": cmt.metadata.get("experience_list", []),  # ⭐ Retrieves the 'experience' list from metadata
+            "used_state_experience_tool": cmt.metadata.get("used_state_experience_tool", False),
+            "state_experience_tool_calls": cmt.metadata.get("state_experience_tool_calls", 0),
+            "state_experience_tool_call_steps": cmt.metadata.get("state_experience_tool_call_steps", []),
+            "state_experience_tool_injections": cmt.metadata.get("state_experience_tool_injections", 0),
+            "state_experience_tool_nonempty_retrievals": cmt.metadata.get("state_experience_tool_nonempty_retrievals", 0),
+            "state_experience_tool_empty_results": cmt.metadata.get("state_experience_tool_empty_results", 0),
+            "state_experience_tool_overflow_reverts": cmt.metadata.get("state_experience_tool_overflow_reverts", 0),
+            "state_experience_tool_repeat_calls_after_injection": cmt.metadata.get("state_experience_tool_repeat_calls_after_injection", 0),
+            "state_experience_tool_retrieved_char_count": cmt.metadata.get("state_experience_tool_retrieved_char_count", 0),
+            "state_experience_tool_retrieved_token_count": cmt.metadata.get("state_experience_tool_retrieved_token_count", 0),
         }
         return extras
 

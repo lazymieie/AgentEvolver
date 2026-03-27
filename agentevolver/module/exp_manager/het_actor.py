@@ -172,6 +172,8 @@ class HETDataParallelPPOActor(DataParallelPPOActor):
                     off_pg_loss = ret_dict["off_pg_loss"]
                     on_pg_clipfrac = ret_dict["on_pg_clipfrac"]
                     on_pg_clipfrac_lower = ret_dict["on_pg_clipfrac_lower"]
+                    off_pg_clipfrac = ret_dict["off_pg_clipfrac"]
+                    off_pg_clipfrac_lower = ret_dict["off_pg_clipfrac_lower"]
                     ppo_kl = ret_dict["ppo_kl"]
                     ##################
                     if entropy_coeff != 0:
@@ -210,7 +212,29 @@ class HETDataParallelPPOActor(DataParallelPPOActor):
                         "actor/off_pg_loss": off_pg_loss.detach().item(),
                         "actor/on_pg_clipfrac": on_pg_clipfrac.detach().item(),
                         "actor/on_pg_clipfrac_lower": on_pg_clipfrac_lower.detach().item(),
+                        "actor/off_pg_clipfrac": off_pg_clipfrac.detach().item(),
+                        "actor/off_pg_clipfrac_lower": off_pg_clipfrac_lower.detach().item(),
                         "actor/ppo_kl": ppo_kl.detach().item(),
+                        "actor/response_exp_token_ratio": ret_dict["response_exp_token_ratio"].detach().item(),
+                        "actor/importance_ratio_mean": ret_dict["ratio_mean"].detach().item(),
+                        "actor/importance_ratio_std": ret_dict["ratio_std"].detach().item(),
+                        "actor/importance_ratio_min": ret_dict["ratio_min"].detach().item(),
+                        "actor/importance_ratio_max": ret_dict["ratio_max"].detach().item(),
+                        "actor/importance_ratio_p95": ret_dict["ratio_p95"].detach().item(),
+                        "actor/importance_ratio_on_mean": ret_dict["ratio_on_mean"].detach().item(),
+                        "actor/importance_ratio_off_mean": ret_dict["ratio_off_mean"].detach().item(),
+                        "actor/importance_ratio_on_std": ret_dict["ratio_on_std"].detach().item(),
+                        "actor/importance_ratio_off_std": ret_dict["ratio_off_std"].detach().item(),
+                        "actor/importance_ratio_clip_high_frac": ret_dict["ratio_clip_high_frac"].detach().item(),
+                        "actor/importance_ratio_clip_low_frac": ret_dict["ratio_clip_low_frac"].detach().item(),
+                        "actor/importance_ratio_on_clip_high_frac": ret_dict["ratio_on_clip_high_frac"].detach().item(),
+                        "actor/importance_ratio_on_clip_low_frac": ret_dict["ratio_on_clip_low_frac"].detach().item(),
+                        "actor/importance_ratio_off_clip_high_frac": ret_dict["ratio_off_clip_high_frac"].detach().item(),
+                        "actor/importance_ratio_off_clip_low_frac": ret_dict["ratio_off_clip_low_frac"].detach().item(),
+                        "actor/approx_kl_abs_mean": ret_dict["approx_kl_abs_mean"].detach().item(),
+                        "actor/approx_kl_abs_max": ret_dict["approx_kl_abs_max"].detach().item(),
+                        "actor/approx_kl_on_mean": ret_dict["approx_kl_on_mean"].detach().item(),
+                        "actor/approx_kl_off_mean": ret_dict["approx_kl_off_mean"].detach().item(),
                     }
                     ##################
                     append_to_dict(metrics, data)

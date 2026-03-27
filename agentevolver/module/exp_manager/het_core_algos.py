@@ -41,6 +41,35 @@ def agg_loss(loss_mat: torch.Tensor, loss_mask: torch.Tensor, loss_agg_mode: str
     return loss
 
 
+def _masked_mean_or_zero(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    mask = mask.bool()
+    if mask.numel() == 0 or not torch.any(mask):
+        return values.new_tensor(0.0, dtype=torch.float32)
+    return values.masked_select(mask).float().mean()
+
+
+def _masked_stats(values: torch.Tensor, mask: torch.Tensor, prefix: str) -> dict[str, torch.Tensor]:
+    mask = mask.bool()
+    zero = values.new_tensor(0.0, dtype=torch.float32)
+    if mask.numel() == 0 or not torch.any(mask):
+        return {
+            f"{prefix}_mean": zero,
+            f"{prefix}_std": zero,
+            f"{prefix}_min": zero,
+            f"{prefix}_max": zero,
+            f"{prefix}_p95": zero,
+        }
+
+    selected = values.masked_select(mask).float()
+    return {
+        f"{prefix}_mean": selected.mean(),
+        f"{prefix}_std": selected.std(unbiased=False) if selected.numel() > 1 else zero,
+        f"{prefix}_min": selected.min(),
+        f"{prefix}_max": selected.max(),
+        f"{prefix}_p95": torch.quantile(selected, 0.95),
+    }
+
+
 
 def het_compute_token_on_off_policy_loss(
     old_log_prob,
@@ -77,16 +106,21 @@ def het_compute_token_on_off_policy_loss(
     negative_approx_kl = log_prob - old_log_prob
     ppo_kl = verl_F.masked_mean(-negative_approx_kl, response_mask)
     ratio = torch.exp(negative_approx_kl)
+    exp_mask = exp_mask.float()
+    response_mask_bool = response_mask.bool()
+    on_mask = response_mask_bool & (exp_mask < 0.5)
+    off_mask = response_mask_bool & (exp_mask >= 0.5)
+    approx_kl = -negative_approx_kl
 
-    def compute_pg_losses(cliprange_low, cliprange_high):
+    def compute_pg_losses(cliprange_low, cliprange_high, metric_mask):
         pg_losses1 = -advantages * ratio
         pg_losses2 = -advantages * torch.clamp(ratio, 1 - cliprange_low, 1 + cliprange_high)
         clip_pg_losses1 = torch.maximum(pg_losses1, pg_losses2)
         pg_losses3 = -advantages * clip_ratio_c
         clip_pg_losses2 = torch.min(pg_losses3, clip_pg_losses1)
         pg_losses = torch.where(advantages < 0, clip_pg_losses2, clip_pg_losses1)
-        clipfrac = verl_F.masked_mean(torch.gt(pg_losses2, pg_losses1).float(), response_mask)
-        clipfrac_lower = verl_F.masked_mean(torch.gt(clip_pg_losses1, pg_losses3) * (advantages < 0).float(), response_mask)
+        clipfrac = _masked_mean_or_zero(torch.gt(pg_losses2, pg_losses1), metric_mask)
+        clipfrac_lower = _masked_mean_or_zero(torch.gt(clip_pg_losses1, pg_losses3) * (advantages < 0), metric_mask)
         return pg_losses, clipfrac, clipfrac_lower
 
     # On-policy calculations
@@ -94,19 +128,36 @@ def het_compute_token_on_off_policy_loss(
         cliprange_low = cliprange
     if cliprange_high is None:
         cliprange_high = cliprange
-    on_pg_losses, on_pg_clipfrac, on_pg_clipfrac_lower = compute_pg_losses(cliprange_low, cliprange_high)
+    on_pg_losses, on_pg_clipfrac, on_pg_clipfrac_lower = compute_pg_losses(cliprange_low, cliprange_high, on_mask)
     on_pg_loss = verl_F.masked_mean(on_pg_losses, (1.0 - exp_mask) * response_mask)  # ⭐ Compute the on-policy loss
 
     # Off-policy calculations
     off_cliprange_low = cliprange_low
-    off_pg_losses, off_pg_clipfrac, off_pg_clipfrac_lower = compute_pg_losses(off_cliprange_low, off_cliprange_high)
+    off_pg_losses, off_pg_clipfrac, off_pg_clipfrac_lower = compute_pg_losses(off_cliprange_low, off_cliprange_high, off_mask)
     off_pg_loss = verl_F.masked_mean(off_pg_losses, exp_mask * response_mask)  # ⭐ Compute the off-policy loss
     off_pg_loss = torch.tensor(0.0) if off_pg_loss.isnan().item() else off_pg_loss
 
     # Combine on-policy and off-policy losses
-    exp_mask = exp_mask.float()
     pg_losses = off_pg_losses * exp_mask + on_pg_losses * (1.0 - exp_mask)
     pg_loss = agg_loss(loss_mat=pg_losses, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)  # ⭐ Aggregate the combined losses
+
+    ratio_stats = {}
+    ratio_stats.update(_masked_stats(ratio, response_mask_bool, "ratio"))
+    ratio_stats.update(_masked_stats(ratio, on_mask, "ratio_on"))
+    ratio_stats.update(_masked_stats(ratio, off_mask, "ratio_off"))
+    ratio_stats.update({
+        "response_exp_token_ratio": _masked_mean_or_zero(exp_mask, response_mask_bool),
+        "ratio_clip_high_frac": _masked_mean_or_zero(ratio > (1 + cliprange_high), response_mask_bool),
+        "ratio_clip_low_frac": _masked_mean_or_zero(ratio < (1 - cliprange_low), response_mask_bool),
+        "ratio_on_clip_high_frac": _masked_mean_or_zero(ratio > (1 + cliprange_high), on_mask),
+        "ratio_on_clip_low_frac": _masked_mean_or_zero(ratio < (1 - cliprange_low), on_mask),
+        "ratio_off_clip_high_frac": _masked_mean_or_zero(ratio > (1 + off_cliprange_high), off_mask),
+        "ratio_off_clip_low_frac": _masked_mean_or_zero(ratio < (1 - off_cliprange_low), off_mask),
+        "approx_kl_abs_mean": _masked_mean_or_zero(torch.abs(approx_kl), response_mask_bool),
+        "approx_kl_abs_max": _masked_stats(torch.abs(approx_kl), response_mask_bool, "abs_approx_kl")["abs_approx_kl_max"],
+        "approx_kl_on_mean": _masked_mean_or_zero(approx_kl, on_mask),
+        "approx_kl_off_mean": _masked_mean_or_zero(approx_kl, off_mask),
+    })
 
     return {
         "pg_loss": pg_loss,
@@ -117,7 +168,10 @@ def het_compute_token_on_off_policy_loss(
         "off_pg_loss": off_pg_loss,
         "on_pg_clipfrac": on_pg_clipfrac,
         "on_pg_clipfrac_lower": on_pg_clipfrac_lower,
+        "off_pg_clipfrac": off_pg_clipfrac,
+        "off_pg_clipfrac_lower": off_pg_clipfrac_lower,
         "ppo_kl": ppo_kl,
+        **ratio_stats,
     }
 
 

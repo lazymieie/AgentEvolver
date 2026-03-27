@@ -1716,7 +1716,48 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
             "num_terminated": sum([traj.is_terminated for traj in trajectories]),
             "num_valid": sum([len(traj.steps) > 0 for traj in trajectories]),
         }
-        
+
+        tool_call_counts = np.array(
+            [float((getattr(traj, "metadata", {}) or {}).get("state_experience_tool_calls", 0)) for traj in trajectories],
+            dtype=np.float32,
+        )
+        tool_injection_counts = np.array(
+            [float((getattr(traj, "metadata", {}) or {}).get("state_experience_tool_injections", 0)) for traj in trajectories],
+            dtype=np.float32,
+        )
+        tool_empty_result_counts = np.array(
+            [float((getattr(traj, "metadata", {}) or {}).get("state_experience_tool_empty_results", 0)) for traj in trajectories],
+            dtype=np.float32,
+        )
+        tool_overflow_revert_counts = np.array(
+            [float((getattr(traj, "metadata", {}) or {}).get("state_experience_tool_overflow_reverts", 0)) for traj in trajectories],
+            dtype=np.float32,
+        )
+        tool_repeat_call_counts = np.array(
+            [float((getattr(traj, "metadata", {}) or {}).get("state_experience_tool_repeat_calls_after_injection", 0)) for traj in trajectories],
+            dtype=np.float32,
+        )
+        tool_retrieved_token_counts = np.array(
+            [float((getattr(traj, "metadata", {}) or {}).get("state_experience_tool_retrieved_token_count", 0)) for traj in trajectories],
+            dtype=np.float32,
+        )
+        active_tool_mask = tool_call_counts > 0
+        active_tool_traj_count = int(active_tool_mask.sum())
+        stats["state_experience_tool"] = {
+            "call_total": float(tool_call_counts.sum()),
+            "call_mean": float(tool_call_counts.mean()) if len(tool_call_counts) > 0 else 0.0,
+            "call_max": float(tool_call_counts.max()) if len(tool_call_counts) > 0 else 0.0,
+            "active_traj_ratio": float(active_tool_mask.mean()) if len(active_tool_mask) > 0 else 0.0,
+            "calls_per_active_traj": float(tool_call_counts[active_tool_mask].mean()) if active_tool_traj_count > 0 else 0.0,
+            "injection_total": float(tool_injection_counts.sum()),
+            "injection_mean": float(tool_injection_counts.mean()) if len(tool_injection_counts) > 0 else 0.0,
+            "empty_result_total": float(tool_empty_result_counts.sum()),
+            "overflow_revert_total": float(tool_overflow_revert_counts.sum()),
+            "repeat_call_total": float(tool_repeat_call_counts.sum()),
+            "retrieved_tokens_total": float(tool_retrieved_token_counts.sum()),
+            "retrieved_tokens_mean": float(tool_retrieved_token_counts.mean()) if len(tool_retrieved_token_counts) > 0 else 0.0,
+        }
+
         # 如果有 rollout 开始时间，计算耗时
         if rollout_start_time is not None:
             rollout_duration = time.time() - rollout_start_time
@@ -1749,6 +1790,14 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
               f"total_tasks={stats['rollout_concurrency']['total_tasks']}, "
               f"terminated={stats['rollout_concurrency']['num_terminated']}, "
               f"valid={stats['rollout_concurrency']['num_valid']}")
+        print(f"🧠 State Experience Tool: total_calls={stats['state_experience_tool']['call_total']:.0f}, "
+              f"active_ratio={stats['state_experience_tool']['active_traj_ratio']:.3f}, "
+              f"calls_per_active_traj={stats['state_experience_tool']['calls_per_active_traj']:.3f}, "
+              f"injections={stats['state_experience_tool']['injection_total']:.0f}, "
+              f"empty_results={stats['state_experience_tool']['empty_result_total']:.0f}, "
+              f"overflow_reverts={stats['state_experience_tool']['overflow_revert_total']:.0f}, "
+              f"repeat_calls={stats['state_experience_tool']['repeat_call_total']:.0f}, "
+              f"retrieved_tokens={stats['state_experience_tool']['retrieved_tokens_total']:.0f}")
         if rollout_start_time is not None:
             print(f"   Duration: {stats['rollout_concurrency']['duration_seconds']:.2f}s, "
                   f"Throughput: {stats['rollout_concurrency']['tasks_per_second']:.2f} tasks/s, "
@@ -2014,6 +2063,18 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                                 "rollout/context_length_p99": rollout_stats["context_length"]["p99"],
                                 "rollout/max_parallel_workers": rollout_stats["rollout_concurrency"]["max_parallel_workers"],
                                 "rollout/total_tasks": rollout_stats["rollout_concurrency"]["total_tasks"],
+                                "rollout/state_exp_tool_call_total": rollout_stats["state_experience_tool"]["call_total"],
+                                "rollout/state_exp_tool_call_mean": rollout_stats["state_experience_tool"]["call_mean"],
+                                "rollout/state_exp_tool_call_max": rollout_stats["state_experience_tool"]["call_max"],
+                                "rollout/state_exp_tool_active_traj_ratio": rollout_stats["state_experience_tool"]["active_traj_ratio"],
+                                "rollout/state_exp_tool_calls_per_active_traj": rollout_stats["state_experience_tool"]["calls_per_active_traj"],
+                                "rollout/state_exp_tool_injection_total": rollout_stats["state_experience_tool"]["injection_total"],
+                                "rollout/state_exp_tool_injection_mean": rollout_stats["state_experience_tool"]["injection_mean"],
+                                "rollout/state_exp_tool_empty_result_total": rollout_stats["state_experience_tool"]["empty_result_total"],
+                                "rollout/state_exp_tool_overflow_revert_total": rollout_stats["state_experience_tool"]["overflow_revert_total"],
+                                "rollout/state_exp_tool_repeat_call_total": rollout_stats["state_experience_tool"]["repeat_call_total"],
+                                "rollout/state_exp_tool_retrieved_tokens_total": rollout_stats["state_experience_tool"]["retrieved_tokens_total"],
+                                "rollout/state_exp_tool_retrieved_tokens_mean": rollout_stats["state_experience_tool"]["retrieved_tokens_mean"],
                             })
                             if rollout_start_time is not None:
                                 metrics.update({

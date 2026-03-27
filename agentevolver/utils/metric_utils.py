@@ -253,6 +253,45 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> Dict[str,
             "critic/rewards-syn/max": torch.max(sequence_reward[is_llm_reward]).detach().item(),
             "critic/rewards-syn/min": torch.min(sequence_reward[is_llm_reward]).detach().item(),
         })
+
+    rollout_extras = normalize_extras(batch.non_tensor_batch.get("extras"))
+    if rollout_extras:
+        add_exp_flags = []
+        offpolicy_flags = []
+        state_tool_calls = []
+        state_tool_injections = []
+        state_tool_empty_results = []
+        state_tool_overflow_reverts = []
+        state_tool_retrieved_tokens = []
+
+        for extra in rollout_extras:
+            if not isinstance(extra, dict):
+                continue
+            add_exp = bool(extra.get("add_exp", False))
+            task_train_expmode = extra.get("task_train_expmode")
+            tool_call_count = int(extra.get("state_experience_tool_calls", 0) or 0)
+
+            add_exp_flags.append(float(add_exp))
+            offpolicy_flags.append(float(add_exp and task_train_expmode == "discard"))
+            state_tool_calls.append(float(tool_call_count))
+            state_tool_injections.append(float(extra.get("state_experience_tool_injections", 0) or 0))
+            state_tool_empty_results.append(float((extra.get("state_experience_tool_empty_results", 0) or 0) > 0))
+            state_tool_overflow_reverts.append(float((extra.get("state_experience_tool_overflow_reverts", 0) or 0) > 0))
+            state_tool_retrieved_tokens.append(float(extra.get("state_experience_tool_retrieved_token_count", 0) or 0))
+
+        if state_tool_calls:
+            metrics.update({
+                "experience/add_exp_sample_ratio": float(np.mean(add_exp_flags)),
+                "experience/offpolicy_sample_ratio": float(np.mean(offpolicy_flags)),
+                "experience/state_tool_called_sample_ratio": float(np.mean(np.array(state_tool_calls) > 0)),
+                "experience/state_tool_call_count_mean": float(np.mean(state_tool_calls)),
+                "experience/state_tool_call_count_max": float(np.max(state_tool_calls)),
+                "experience/state_tool_injection_count_mean": float(np.mean(state_tool_injections)),
+                "experience/state_tool_empty_result_sample_ratio": float(np.mean(state_tool_empty_results)),
+                "experience/state_tool_overflow_revert_sample_ratio": float(np.mean(state_tool_overflow_reverts)),
+                "experience/state_tool_retrieved_tokens_mean": float(np.mean(state_tool_retrieved_tokens)),
+                "experience/state_tool_retrieved_tokens_max": float(np.max(state_tool_retrieved_tokens)),
+            })
     return metrics
 
 

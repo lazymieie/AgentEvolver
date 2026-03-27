@@ -119,6 +119,16 @@ class AgentFlow(BaseAgentFlow):
         self.cmt.metadata["task_train_exp_mode"] = traj_exp_config.train_mode
         self.cmt.metadata["add_exp"] = traj_exp_config.add_exp
         self.cmt.metadata["experience_list"] = traj_exp_config.experience_list
+        self.cmt.metadata["state_experience_tool_calls"] = 0
+        self.cmt.metadata["state_experience_tool_call_steps"] = []
+        self.cmt.metadata["state_experience_tool_injections"] = 0
+        self.cmt.metadata["state_experience_tool_nonempty_retrievals"] = 0
+        self.cmt.metadata["state_experience_tool_empty_results"] = 0
+        self.cmt.metadata["state_experience_tool_overflow_reverts"] = 0
+        self.cmt.metadata["state_experience_tool_repeat_calls_after_injection"] = 0
+        self.cmt.metadata["state_experience_tool_retrieved_char_count"] = 0
+        self.cmt.metadata["state_experience_tool_retrieved_token_count"] = 0
+        self.cmt.metadata["used_state_experience_tool"] = False
         # init_messages, metadata = self.add_experience(init_messages, task_id, data_id, rollout_id, query, add_exp)  # ⭐ Initialize messages and metadata
         # self.cmt.metadata = metadata
         self.cmt.save_init_input(init_messages, add_nothink)
@@ -174,6 +184,27 @@ class AgentFlow(BaseAgentFlow):
                 self.cmt.metadata["experience_tool_call_issues"] = existing_issues
             existing_issues.append(issue)
 
+        def record_state_experience_tool_call(step: int, llm_output: Dict[str, Any], repeated_after_injection: bool = False) -> int:
+            tool_call_count = self.exp_worker.get_called_tool_names(llm_output).count("get_experience_guidance")
+            if tool_call_count <= 0 and self.exp_worker.has_experience_guidance_tool_call(llm_output):
+                tool_call_count = 1
+            if tool_call_count <= 0:
+                return 0
+
+            self.cmt.metadata["state_experience_tool_calls"] += tool_call_count
+            self.cmt.metadata["used_state_experience_tool"] = True
+
+            call_steps = self.cmt.metadata.get("state_experience_tool_call_steps")
+            if not isinstance(call_steps, list):
+                call_steps = []
+                self.cmt.metadata["state_experience_tool_call_steps"] = call_steps
+            call_steps.extend([step] * tool_call_count)
+
+            if repeated_after_injection:
+                self.cmt.metadata["state_experience_tool_repeat_calls_after_injection"] += tool_call_count
+
+            return tool_call_count
+
         for act_step in range(self.max_steps):
             # 2. 🔄 Update thread progress
             tmux['step'][thread_index] = act_step
@@ -220,11 +251,20 @@ class AgentFlow(BaseAgentFlow):
                 )
                 record_tool_call_issue(act_step, "initial_request", llm_output)
             if use_state_tool_experience and self.exp_worker.has_experience_guidance_tool_call(llm_output):
+                record_state_experience_tool_call(act_step, llm_output)
                 transient_state_experience = self.exp_worker.retrieve_state_tool_experience(
                     llm_output=llm_output,
                     traj_exp_config=traj_exp_config,
                     task_id=task_id,
                 )
+                if transient_state_experience:
+                    self.cmt.metadata["state_experience_tool_nonempty_retrievals"] += 1
+                    self.cmt.metadata["state_experience_tool_retrieved_char_count"] += len(transient_state_experience)
+                    self.cmt.metadata["state_experience_tool_retrieved_token_count"] += len(
+                        self.tokenizer.encode(transient_state_experience, add_special_tokens=False)
+                    )
+                else:
+                    self.cmt.metadata["state_experience_tool_empty_results"] += 1
                 final_step_input_message_arr = self.exp_worker.prepend_experience_to_latest_message(
                     step_input_message_arr,
                     transient_state_experience,
@@ -236,6 +276,7 @@ class AgentFlow(BaseAgentFlow):
                     logger.warning(f"Token overflow detected after transient state experience injection at step {act_step}.")
                     final_step_input_message_arr = step_input_message_arr
                     transient_injection_applied = False
+                    self.cmt.metadata["state_experience_tool_overflow_reverts"] += 1
 
                 max_guided_generation_retries = 2
                 generation_succeeded = False
@@ -255,6 +296,11 @@ class AgentFlow(BaseAgentFlow):
                         generation_succeeded = True
                         break
 
+                    record_state_experience_tool_call(
+                        act_step,
+                        llm_output,
+                        repeated_after_injection=True,
+                    )
                     logger.warning(
                         f"Assistant requested get_experience_guidance again after transient injection "
                         f"at step {act_step}, retry {guided_retry_idx + 1}/{max_guided_generation_retries}."
@@ -284,6 +330,7 @@ class AgentFlow(BaseAgentFlow):
                     break
 
                 if generation_succeeded and transient_injection_applied:
+                    self.cmt.metadata["state_experience_tool_injections"] += 1
                     latest_prompt_with_exp = ""
                     latest_prompt_without_exp = ""
                     if final_step_input_message_arr:
