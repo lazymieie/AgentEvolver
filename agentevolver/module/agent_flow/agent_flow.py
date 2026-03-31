@@ -205,6 +205,37 @@ class AgentFlow(BaseAgentFlow):
 
             return tool_call_count
 
+        def record_repeated_state_experience_tool_event(
+            step: int,
+            retry_idx: int,
+            max_retries: int,
+            llm_output: Dict[str, Any],
+            prompt_with_exp: str,
+            prompt_without_exp: str,
+            injected_experience: str,
+            injection_applied: bool,
+        ) -> None:
+            if not hasattr(self, 'artifact_recorder') or not self.artifact_recorder or not self.artifact_recorder.enable:
+                return
+
+            try:
+                self.artifact_recorder.write_state_experience_tool_event(
+                    task_id=task_id,
+                    traj_id=traj_id,
+                    step=step,
+                    event_type="repeat_call_after_injection",
+                    retry_idx=retry_idx,
+                    max_retries=max_retries,
+                    injection_applied=injection_applied,
+                    tool_names=self.exp_worker.get_called_tool_names(llm_output),
+                    prompt_with_exp=prompt_with_exp,
+                    prompt_without_exp=prompt_without_exp,
+                    injected_experience=injected_experience,
+                    llm_output=llm_output,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record repeated state experience tool event: {e}")
+
         for act_step in range(self.max_steps):
             # 2. 🔄 Update thread progress
             tmux['step'][thread_index] = act_step
@@ -300,6 +331,22 @@ class AgentFlow(BaseAgentFlow):
                         act_step,
                         llm_output,
                         repeated_after_injection=True,
+                    )
+                    latest_prompt_with_exp = ""
+                    latest_prompt_without_exp = ""
+                    if final_step_input_message_arr:
+                        latest_prompt_with_exp = str(final_step_input_message_arr[-1].get("content", ""))
+                    if step_input_message_arr:
+                        latest_prompt_without_exp = str(step_input_message_arr[-1].get("content", ""))
+                    record_repeated_state_experience_tool_event(
+                        step=act_step,
+                        retry_idx=guided_retry_idx + 1,
+                        max_retries=max_guided_generation_retries,
+                        llm_output=llm_output,
+                        prompt_with_exp=latest_prompt_with_exp,
+                        prompt_without_exp=latest_prompt_without_exp,
+                        injected_experience=transient_state_experience,
+                        injection_applied=transient_injection_applied,
                     )
                     logger.warning(
                         f"Assistant requested get_experience_guidance again after transient injection "

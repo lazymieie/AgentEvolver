@@ -490,7 +490,53 @@ class ArtifactRecorder:
             record["prompt_without_exp"] = self._truncate_str(prompt_without_exp)
         
         self.write_jsonl("experience_injection", record, global_step)
-    
+
+    def write_state_experience_tool_event(
+        self,
+        task_id: str,
+        traj_id: str,
+        step: int,
+        event_type: str,
+        retry_idx: Optional[int] = None,
+        max_retries: Optional[int] = None,
+        injection_applied: Optional[bool] = None,
+        tool_names: Optional[List[str]] = None,
+        prompt_with_exp: Optional[str] = None,
+        prompt_without_exp: Optional[str] = None,
+        injected_experience: Optional[str] = None,
+        llm_output: Optional[Dict[str, Any]] = None,
+        global_step: Optional[int] = None,
+    ):
+        """Record state-level experience-tool events during rollout."""
+        if not self.enable or not self.dump_experiences:
+            return
+
+        record: Dict[str, Any] = {
+            "task_id": task_id,
+            "traj_id": traj_id,
+            "step": step,
+            "event_type": event_type,
+        }
+
+        if retry_idx is not None:
+            record["retry_idx"] = retry_idx
+        if max_retries is not None:
+            record["max_retries"] = max_retries
+        if injection_applied is not None:
+            record["injection_applied"] = injection_applied
+        if tool_names is not None:
+            record["tool_names"] = tool_names
+        if prompt_with_exp is not None and self.dump_prompts:
+            record["prompt_with_exp"] = self._truncate_str(prompt_with_exp)
+        if prompt_without_exp is not None and self.dump_prompts:
+            record["prompt_without_exp"] = self._truncate_str(prompt_without_exp)
+        if injected_experience is not None:
+            record["injected_experience"] = self._truncate_str(injected_experience)
+        if llm_output is not None:
+            record["llm_output"] = self._truncate_dict(llm_output)
+
+        self.write_jsonl("state_experience_tool_events", record, global_step)
+
     def write_experience_stripping(
         self,
         task_id: str,
@@ -635,6 +681,12 @@ Experience removal during training (for loss calculation).
 - **Fields**: task_id, before, after, token_spans
 - **When**: Recorded when experiences are stripped from training prompts
 
+### state_experience_tool_events.jsonl
+State-level experience-tool events during rollout, including repeated calls after transient guidance injection.
+- **Source**: `agentevolver.module.agent_flow.agent_flow.AgentFlow.execute()`
+- **Fields**: task_id, traj_id, step, event_type, retry_idx, max_retries, injection_applied, tool_names, prompt_with_exp, prompt_without_exp, injected_experience, llm_output
+- **When**: Recorded immediately when the model calls `get_experience_guidance` again after guidance injection/attempted injection
+
 ### generation_failures.jsonl
 Generation failures during rollout, including repeated experience-guidance requests.
 - **Source**: `agentevolver.module.agent_flow.agent_flow.AgentFlow.execute()`
@@ -695,7 +747,6 @@ python3 -m agentevolver.main_ppo ... debug_artifacts.enable=true
                 f.write(readme_content)
         except Exception as e:
             _get_logger().warning(f"Failed to write README: {e}")
-
 
 
 
