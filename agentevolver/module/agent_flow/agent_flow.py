@@ -236,6 +236,19 @@ class AgentFlow(BaseAgentFlow):
             except Exception as e:
                 logger.warning(f"Failed to record repeated state experience tool event: {e}")
 
+        def write_state_tool_trace(step: int, trace: Dict[str, Any]) -> None:
+            if not hasattr(self, 'artifact_recorder') or not self.artifact_recorder or not self.artifact_recorder.enable:
+                return
+            try:
+                self.artifact_recorder.write_state_experience_tool_trace(
+                    task_id=task_id,
+                    traj_id=traj_id,
+                    step=step,
+                    trace=trace,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record state experience tool trace: {e}")
+
         for act_step in range(self.max_steps):
             # 2. 🔄 Update thread progress
             tmux['step'][thread_index] = act_step
@@ -268,6 +281,7 @@ class AgentFlow(BaseAgentFlow):
             final_step_input_message_arr = step_input_message_arr
             transient_state_experience = ""
             transient_injection_applied = False
+            state_tool_trace: Dict[str, Any] | None = None
             llm_output = self.llm_chat_fn(step_input_message_arr, request_id=request_id)  # ⭐ Call the LLM to generate the next response
             if "content" not in llm_output or llm_output["content"] is None:
                 llm_output["content"] = ""
@@ -283,11 +297,32 @@ class AgentFlow(BaseAgentFlow):
                 record_tool_call_issue(act_step, "initial_request", llm_output)
             if use_state_tool_experience and self.exp_worker.has_experience_guidance_tool_call(llm_output):
                 record_state_experience_tool_call(act_step, llm_output)
-                transient_state_experience = self.exp_worker.retrieve_state_tool_experience(
+                latest_prompt_without_exp = ""
+                if step_input_message_arr:
+                    latest_prompt_without_exp = str(step_input_message_arr[-1].get("content", ""))
+                state_tool_trace = {
+                    "tool_call_count": 1,
+                    "context_before_tool": step_input_message_arr,
+                    "prompt_without_exp": latest_prompt_without_exp,
+                    "initial_llm_output": llm_output,
+                    "tool_names": self.exp_worker.get_called_tool_names(llm_output),
+                    "tool_payload": self.exp_worker.get_experience_tool_payload(llm_output),
+                    "retrieval": {},
+                    "guided_retries": [],
+                }
+                retrieval_details = self.exp_worker.retrieve_state_tool_experience_details(
                     llm_output=llm_output,
                     traj_exp_config=traj_exp_config,
                     task_id=task_id,
                 )
+                transient_state_experience = str(retrieval_details.get("formatted_experience", ""))
+                if state_tool_trace is not None:
+                    state_tool_trace["retrieval"] = {
+                        "query": retrieval_details.get("query", ""),
+                        "topk": retrieval_details.get("topk", []),
+                        "raw_experience": retrieval_details.get("raw_experience", ""),
+                        "formatted_experience": transient_state_experience,
+                    }
                 if transient_state_experience:
                     self.cmt.metadata["state_experience_tool_nonempty_retrievals"] += 1
                     self.cmt.metadata["state_experience_tool_retrieved_char_count"] += len(transient_state_experience)
@@ -301,6 +336,12 @@ class AgentFlow(BaseAgentFlow):
                     transient_state_experience,
                 )
                 transient_injection_applied = final_step_input_message_arr != step_input_message_arr
+                if state_tool_trace is not None:
+                    latest_prompt_with_exp = ""
+                    if final_step_input_message_arr:
+                        latest_prompt_with_exp = str(final_step_input_message_arr[-1].get("content", ""))
+                    state_tool_trace["prompt_with_exp"] = latest_prompt_with_exp
+                    state_tool_trace["injection_applied"] = transient_injection_applied
 
                 is_safe = self.cmt.check_context_token_num_safe(final_step_input_message_arr)
                 if not is_safe:
@@ -308,6 +349,12 @@ class AgentFlow(BaseAgentFlow):
                     final_step_input_message_arr = step_input_message_arr
                     transient_injection_applied = False
                     self.cmt.metadata["state_experience_tool_overflow_reverts"] += 1
+                if state_tool_trace is not None:
+                    state_tool_trace["overflow_reverted"] = not is_safe
+                    state_tool_trace["effective_prompt_after_overflow_check"] = (
+                        final_step_input_message_arr[-1].get("content", "")
+                        if final_step_input_message_arr else ""
+                    )
 
                 max_guided_generation_retries = 2
                 generation_succeeded = False
@@ -348,6 +395,14 @@ class AgentFlow(BaseAgentFlow):
                         injected_experience=transient_state_experience,
                         injection_applied=transient_injection_applied,
                     )
+                    if state_tool_trace is not None:
+                        state_tool_trace["tool_call_count"] += 1
+                        state_tool_trace["guided_retries"].append({
+                            "retry_idx": guided_retry_idx + 1,
+                            "tool_names": self.exp_worker.get_called_tool_names(llm_output),
+                            "tool_payload": self.exp_worker.get_experience_tool_payload(llm_output),
+                            "llm_output": llm_output,
+                        })
                     logger.warning(
                         f"Assistant requested get_experience_guidance again after transient injection "
                         f"at step {act_step}, retry {guided_retry_idx + 1}/{max_guided_generation_retries}."
@@ -373,6 +428,11 @@ class AgentFlow(BaseAgentFlow):
                         prompt_without_exp=latest_prompt_without_exp,
                         llm_output=llm_output,
                     )
+                    if state_tool_trace is not None:
+                        state_tool_trace["final_status"] = "retry_exceeded"
+                        state_tool_trace["final_llm_output"] = llm_output
+                        state_tool_trace["stop_reason"] = "experience_guidance_retry_exceeded"
+                        write_state_tool_trace(act_step, state_tool_trace)
                     stop_reason = "experience_guidance_retry_exceeded"
                     break
 
@@ -391,6 +451,9 @@ class AgentFlow(BaseAgentFlow):
                         prompt_with_exp=latest_prompt_with_exp,
                         prompt_without_exp=latest_prompt_without_exp,
                     )
+                if state_tool_trace is not None:
+                    state_tool_trace["final_status"] = "guided_generation_succeeded"
+                    state_tool_trace["final_llm_output"] = llm_output
             if (stop is not None) and stop[thread_index]:  # Check if the thread should stop (because other threads have completed, making this thread useless)
                 self.cmt.discarded = True
                 stop_reason = "discarded_by_parallel_stop"
@@ -401,6 +464,7 @@ class AgentFlow(BaseAgentFlow):
             tmux['token'][thread_index] += self.cmt.generated_token_cnt
 
             # 7. 🌍 world interaction
+            world_interaction_content = ""
             try:
                 world_interaction_content = self.cmt.prepare_world_interaction()
                 env_output = env.step(instance_id, {"content": world_interaction_content, "role": "assistant"})  # ⭐ Interact with the environment
@@ -431,6 +495,12 @@ class AgentFlow(BaseAgentFlow):
             state.pop('tool_calls', None)
             self.cmt.save_env_output(state, input_msg_ref=step_input_message_arr, add_nothink=add_nothink)  # ⭐ Save the environment output
             completed_env_steps = act_step + 1
+            if state_tool_trace is not None:
+                state_tool_trace["post_guidance_action"] = world_interaction_content
+                state_tool_trace["env_output"] = env_output
+                state_tool_trace["context_after_step"] = self.cmt.prepare_previous_context(mod="future")
+                state_tool_trace["final_status"] = "env_step_completed"
+                write_state_tool_trace(act_step, state_tool_trace)
 
             # 9. 🔚 determine if the episode is terminated
             self.cmt.is_terminated = env_output["is_terminated"]

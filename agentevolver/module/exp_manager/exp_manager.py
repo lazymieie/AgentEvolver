@@ -564,6 +564,9 @@ class ExperienceWorker(object):
                 return arguments
         return self._extract_experience_tool_payload_from_text(llm_output.get("content", ""))
 
+    def get_experience_tool_payload(self, llm_output: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        return self._extract_experience_tool_payload(llm_output)
+
     def has_experience_guidance_tool_call(self, llm_output: Dict[str, Any]) -> bool:
         return self._extract_experience_tool_payload(llm_output) is not None
 
@@ -623,15 +626,52 @@ class ExperienceWorker(object):
             except Exception as e:
                 logger.warning(f"Failed to record state experience injection: {e}")
 
-    def retrieve_state_tool_experience(
+    def _build_state_retrieval_topk(self, history_experience: Any) -> List[Dict[str, Any]]:
+        topk_list: List[Dict[str, Any]] = []
+        if isinstance(history_experience, list):
+            for exp in history_experience:
+                if isinstance(exp, dict):
+                    topk_list.append({
+                        "exp_id": exp.get("id", exp.get("exp_id", "unknown")),
+                        "score": exp.get("score", exp.get("similarity", 0.0)),
+                        "when_to_use": exp.get("when_to_use", ""),
+                        "content": exp.get("content", str(exp)),
+                        "source_task_id": exp.get("source_task_id", None),
+                        "source_traj_id": exp.get("source_traj_id", None),
+                    })
+                else:
+                    topk_list.append({
+                        "exp_id": "unknown",
+                        "score": 1.0,
+                        "when_to_use": "",
+                        "content": str(exp),
+                    })
+            return topk_list
+
+        if isinstance(history_experience, str) and history_experience:
+            topk_list.append({
+                "exp_id": "unknown",
+                "score": 1.0,
+                "when_to_use": "",
+                "content": history_experience,
+            })
+        return topk_list
+
+    def retrieve_state_tool_experience_details(
         self,
         llm_output: Dict[str, Any],
         traj_exp_config: TrajExpConfig,
         task_id: str = "unknown",
-    ) -> str:
+    ) -> Dict[str, Any]:
         payload = self._extract_experience_tool_payload(llm_output)
         if payload is None:
-            return ""
+            return {
+                "payload": None,
+                "query": "",
+                "topk": [],
+                "raw_experience": "",
+                "formatted_experience": "",
+            }
 
         intent = str(payload.get("current_intent", "")).strip()
         action = str(payload.get("last_action", "")).strip()
@@ -646,28 +686,10 @@ class ExperienceWorker(object):
             retrieve_top_k=reme_config.retrieve_top_k,
             workspace_id=reme_config.workspace_id,
         )
+        topk_list = self._build_state_retrieval_topk(history_experience)
 
         if hasattr(self, 'artifact_recorder') and self.artifact_recorder and self.artifact_recorder.enable:
             try:
-                topk_list = []
-                if isinstance(history_experience, list):
-                    for exp in history_experience:
-                        if isinstance(exp, dict):
-                            topk_list.append({
-                                "exp_id": exp.get("id", exp.get("exp_id", "unknown")),
-                                "score": exp.get("score", exp.get("similarity", 0.0)),
-                                "when_to_use": exp.get("when_to_use", ""),
-                                "content": exp.get("content", str(exp)),
-                                "source_task_id": exp.get("source_task_id", None),
-                                "source_traj_id": exp.get("source_traj_id", None),
-                            })
-                elif isinstance(history_experience, str) and history_experience:
-                    topk_list.append({
-                        "exp_id": "unknown",
-                        "score": 1.0,
-                        "when_to_use": "",
-                        "content": history_experience,
-                    })
                 self.artifact_recorder.write_experience_retrieval(
                     task_id=task_id,
                     query=query,
@@ -677,13 +699,38 @@ class ExperienceWorker(object):
                 logger.warning(f"Failed to record state experience retrieval: {e}")
 
         if not history_experience:
-            return ""
+            return {
+                "payload": payload,
+                "query": query,
+                "topk": topk_list,
+                "raw_experience": "",
+                "formatted_experience": "",
+            }
 
         if self._should_replace_with_dummy_experience():
             history_experience = self._build_same_token_dummy_experience(str(history_experience))
 
         formatted_experience = self.experience_template.format(history_experience)
-        return formatted_experience
+        return {
+            "payload": payload,
+            "query": query,
+            "topk": topk_list,
+            "raw_experience": history_experience,
+            "formatted_experience": formatted_experience,
+        }
+
+    def retrieve_state_tool_experience(
+        self,
+        llm_output: Dict[str, Any],
+        traj_exp_config: TrajExpConfig,
+        task_id: str = "unknown",
+    ) -> str:
+        details = self.retrieve_state_tool_experience_details(
+            llm_output=llm_output,
+            traj_exp_config=traj_exp_config,
+            task_id=task_id,
+        )
+        return str(details.get("formatted_experience", ""))
 
     def _should_replace_with_dummy_experience(self) -> bool:
         return bool(

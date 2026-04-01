@@ -181,22 +181,40 @@ class ArtifactRecorder:
             return s[:max_chars] + f"... [truncated, original length: {len(s)}]"
         return s
     
-    def _truncate_dict(self, d: Dict[str, Any], max_chars: Optional[int] = None) -> Dict[str, Any]:
-        """Recursively truncate string values in a dict."""
+    def _sanitize_for_json(self, value: Any, max_chars: Optional[int] = None) -> Any:
+        """Recursively convert values into JSON-safe structures and truncate long strings."""
         if max_chars is None:
             max_chars = self.max_str_chars
-        
-        result = {}
-        for k, v in d.items():
-            if isinstance(v, str):
-                result[k] = self._truncate_str(v, max_chars)
-            elif isinstance(v, dict):
-                result[k] = self._truncate_dict(v, max_chars)
-            elif isinstance(v, list):
-                result[k] = [self._truncate_str(item, max_chars) if isinstance(item, str) else item for item in v]
-            else:
-                result[k] = v
-        return result
+
+        if value is None or isinstance(value, (int, float, bool)):
+            return value
+        if isinstance(value, str):
+            return self._truncate_str(value, max_chars)
+        if isinstance(value, dict):
+            return {
+                str(k): self._sanitize_for_json(v, max_chars)
+                for k, v in value.items()
+            }
+        if isinstance(value, (list, tuple, set)):
+            return [self._sanitize_for_json(item, max_chars) for item in value]
+        if hasattr(value, "model_dump") and callable(getattr(value, "model_dump")):
+            try:
+                return self._sanitize_for_json(value.model_dump(), max_chars)
+            except Exception:
+                pass
+        if hasattr(value, "__dict__"):
+            try:
+                return self._sanitize_for_json(vars(value), max_chars)
+            except Exception:
+                pass
+        return self._truncate_str(str(value), max_chars)
+
+    def _truncate_dict(self, d: Dict[str, Any], max_chars: Optional[int] = None) -> Dict[str, Any]:
+        """Backward-compatible wrapper around JSON sanitization."""
+        sanitized = self._sanitize_for_json(d, max_chars)
+        if isinstance(sanitized, dict):
+            return sanitized
+        return {"value": sanitized}
     
     def _should_record(self, name: str, global_step: Optional[int] = None) -> bool:
         """Check if we should record this entry (respect max_examples_per_step)."""
@@ -248,8 +266,8 @@ class ArtifactRecorder:
         if global_step is not None:
             record["global_step"] = global_step
         
-        # Truncate long strings
-        record = self._truncate_dict(record)
+        # Convert to JSON-safe data and truncate long strings
+        record = self._sanitize_for_json(record)
         
         # Get file path
         file_path = self._get_file_path(name)
@@ -537,6 +555,27 @@ class ArtifactRecorder:
 
         self.write_jsonl("state_experience_tool_events", record, global_step)
 
+    def write_state_experience_tool_trace(
+        self,
+        task_id: str,
+        traj_id: str,
+        step: int,
+        trace: Dict[str, Any],
+        global_step: Optional[int] = None,
+    ):
+        """Record a complete trace for one state-experience-tool usage episode."""
+        if not self.enable or not self.dump_experiences:
+            return
+
+        record: Dict[str, Any] = {
+            "task_id": task_id,
+            "traj_id": traj_id,
+            "step": step,
+            "event_type": "tool_trace",
+            "trace": trace,
+        }
+        self.write_jsonl("state_experience_tool_events", record, global_step)
+
     def write_experience_stripping(
         self,
         task_id: str,
@@ -682,10 +721,10 @@ Experience removal during training (for loss calculation).
 - **When**: Recorded when experiences are stripped from training prompts
 
 ### state_experience_tool_events.jsonl
-State-level experience-tool events during rollout, including repeated calls after transient guidance injection.
+Complete state-level experience-tool traces during rollout, including how the tool was called, what was retrieved, and what the model did after guidance.
 - **Source**: `agentevolver.module.agent_flow.agent_flow.AgentFlow.execute()`
-- **Fields**: task_id, traj_id, step, event_type, retry_idx, max_retries, injection_applied, tool_names, prompt_with_exp, prompt_without_exp, injected_experience, llm_output
-- **When**: Recorded immediately when the model calls `get_experience_guidance` again after guidance injection/attempted injection
+- **Fields**: task_id, traj_id, step, event_type, trace (tool payload, retrieval query/topk, injected experience, guided retries, post-guidance action, env output, context snapshots)
+- **When**: Recorded for every state-experience-tool usage episode, plus repeated-call sub-events after guidance injection/attempted injection
 
 ### generation_failures.jsonl
 Generation failures during rollout, including repeated experience-guidance requests.
@@ -747,6 +786,4 @@ python3 -m agentevolver.main_ppo ... debug_artifacts.enable=true
                 f.write(readme_content)
         except Exception as e:
             _get_logger().warning(f"Failed to write README: {e}")
-
-
 
