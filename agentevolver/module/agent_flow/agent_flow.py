@@ -1,5 +1,6 @@
 import time
 import os
+import hashlib
 
 from loguru import logger
 
@@ -129,6 +130,9 @@ class AgentFlow(BaseAgentFlow):
         self.cmt.metadata["state_experience_tool_retrieved_char_count"] = 0
         self.cmt.metadata["state_experience_tool_retrieved_token_count"] = 0
         self.cmt.metadata["used_state_experience_tool"] = False
+        self.cmt.metadata["state_tool_ablation_mode"] = self.exp_worker.get_state_tool_ablation_mode()
+        self.cmt.metadata["no_tool_second_chance_calls"] = 0
+        self.cmt.metadata["no_tool_second_chance_steps"] = []
         # init_messages, metadata = self.add_experience(init_messages, task_id, data_id, rollout_id, query, add_exp)  # ⭐ Initialize messages and metadata
         # self.cmt.metadata = metadata
         self.cmt.save_init_input(init_messages, add_nothink)
@@ -249,6 +253,29 @@ class AgentFlow(BaseAgentFlow):
             except Exception as e:
                 logger.warning(f"Failed to record state experience tool trace: {e}")
 
+        def should_apply_no_tool_second_chance(step: int) -> bool:
+            mode = self.exp_worker.get_no_tool_second_chance_mode()
+            if mode == "all_second_chance_no_tool":
+                return True
+            if mode == "random_second_chance_no_tool":
+                ratio = self.exp_worker.get_no_tool_second_chance_ratio()
+                if ratio <= 0.0:
+                    return False
+                seed = self.exp_worker.get_no_tool_second_chance_seed()
+                key = f"{seed}:{task_id}:{data_id}:{rollout_id}:{thread_index}:{step}"
+                digest = hashlib.sha256(key.encode("utf-8")).digest()
+                bucket = int.from_bytes(digest[:8], byteorder="big", signed=False) / float(1 << 64)
+                return bucket < ratio
+            return False
+
+        def record_no_tool_second_chance(step: int, extra_calls: int) -> None:
+            self.cmt.metadata["no_tool_second_chance_calls"] += extra_calls
+            applied_steps = self.cmt.metadata.get("no_tool_second_chance_steps")
+            if not isinstance(applied_steps, list):
+                applied_steps = []
+                self.cmt.metadata["no_tool_second_chance_steps"] = applied_steps
+            applied_steps.append(step)
+
         for act_step in range(self.max_steps):
             # 2. 🔄 Update thread progress
             tmux['step'][thread_index] = act_step
@@ -286,8 +313,9 @@ class AgentFlow(BaseAgentFlow):
             if "content" not in llm_output or llm_output["content"] is None:
                 llm_output["content"] = ""
             use_state_tool_experience = (
-                traj_exp_config.add_exp and
-                self.exp_worker._use_state_tool_experience()
+                self.exp_worker._use_state_tool_experience() and (
+                    traj_exp_config.add_exp or self.exp_worker.should_force_state_tool_ablation()
+                )
             )
             if use_state_tool_experience and self.exp_worker.has_mixed_experience_and_other_tool_calls(llm_output):
                 logger.warning(
@@ -318,6 +346,7 @@ class AgentFlow(BaseAgentFlow):
                 transient_state_experience = str(retrieval_details.get("formatted_experience", ""))
                 if state_tool_trace is not None:
                     state_tool_trace["retrieval"] = {
+                        "retrieval_mode": retrieval_details.get("retrieval_mode", ""),
                         "query": retrieval_details.get("query", ""),
                         "topk": retrieval_details.get("topk", []),
                         "raw_experience": retrieval_details.get("raw_experience", ""),
@@ -356,7 +385,7 @@ class AgentFlow(BaseAgentFlow):
                         if final_step_input_message_arr else ""
                     )
 
-                max_guided_generation_retries = 2
+                max_guided_generation_retries = self.exp_worker.get_guided_generation_retries()
                 generation_succeeded = False
                 for guided_retry_idx in range(max_guided_generation_retries):
                     llm_output = self.llm_chat_fn(final_step_input_message_arr, request_id=request_id)
@@ -454,6 +483,14 @@ class AgentFlow(BaseAgentFlow):
                 if state_tool_trace is not None:
                     state_tool_trace["final_status"] = "guided_generation_succeeded"
                     state_tool_trace["final_llm_output"] = llm_output
+            elif should_apply_no_tool_second_chance(act_step):
+                no_tool_second_chance_retries = self.exp_worker.get_no_tool_second_chance_retries()
+                if no_tool_second_chance_retries > 0:
+                    record_no_tool_second_chance(act_step, no_tool_second_chance_retries)
+                    for _ in range(no_tool_second_chance_retries):
+                        llm_output = self.llm_chat_fn(final_step_input_message_arr, request_id=request_id)
+                        if "content" not in llm_output or llm_output["content"] is None:
+                            llm_output["content"] = ""
             if (stop is not None) and stop[thread_index]:  # Check if the thread should stop (because other threads have completed, making this thread useless)
                 self.cmt.discarded = True
                 stop_reason = "discarded_by_parallel_stop"

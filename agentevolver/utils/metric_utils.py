@@ -263,6 +263,7 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> Dict[str,
         state_tool_empty_results = []
         state_tool_overflow_reverts = []
         state_tool_retrieved_tokens = []
+        no_tool_second_chance_calls = []
 
         for extra in rollout_extras:
             if not isinstance(extra, dict):
@@ -278,6 +279,7 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> Dict[str,
             state_tool_empty_results.append(float((extra.get("state_experience_tool_empty_results", 0) or 0) > 0))
             state_tool_overflow_reverts.append(float((extra.get("state_experience_tool_overflow_reverts", 0) or 0) > 0))
             state_tool_retrieved_tokens.append(float(extra.get("state_experience_tool_retrieved_token_count", 0) or 0))
+            no_tool_second_chance_calls.append(float(extra.get("no_tool_second_chance_calls", 0) or 0))
 
         if state_tool_calls:
             metrics.update({
@@ -291,6 +293,9 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> Dict[str,
                 "experience/state_tool_overflow_revert_sample_ratio": float(np.mean(state_tool_overflow_reverts)),
                 "experience/state_tool_retrieved_tokens_mean": float(np.mean(state_tool_retrieved_tokens)),
                 "experience/state_tool_retrieved_tokens_max": float(np.max(state_tool_retrieved_tokens)),
+                "experience/no_tool_second_chance_sample_ratio": float(np.mean(np.array(no_tool_second_chance_calls) > 0)),
+                "experience/no_tool_second_chance_call_count_mean": float(np.mean(no_tool_second_chance_calls)),
+                "experience/no_tool_second_chance_call_count_max": float(np.max(no_tool_second_chance_calls)),
             })
     return metrics
 

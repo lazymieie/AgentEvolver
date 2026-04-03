@@ -51,6 +51,29 @@ EXPERIENCE_GUIDANCE_TOOL = {
     }
 }
 
+STATE_TOOL_ABLATION_DEFAULT_MODE = "standard"
+STATE_TOOL_ABLATION_TOOL_MODES = {"tool_empty", "tool_fallback", "tool_real"}
+STATE_TOOL_ABLATION_NO_TOOL_SECOND_CHANCE_MODES = {
+    "all_second_chance_no_tool",
+    "random_second_chance_no_tool",
+}
+
+
+def get_state_tool_ablation_mode(config: DictConfig) -> str:
+    ablation_config = getattr(getattr(config, "exp_manager", None), "state_tool_ablation", None)
+    mode = getattr(ablation_config, "mode", STATE_TOOL_ABLATION_DEFAULT_MODE)
+    if mode is None:
+        return STATE_TOOL_ABLATION_DEFAULT_MODE
+    return str(mode).strip().lower() or STATE_TOOL_ABLATION_DEFAULT_MODE
+
+
+def uses_state_tool_guidance(config: DictConfig) -> bool:
+    mode = get_state_tool_ablation_mode(config)
+    if mode != STATE_TOOL_ABLATION_DEFAULT_MODE:
+        return mode in STATE_TOOL_ABLATION_TOOL_MODES
+    reme_config = getattr(getattr(config, "exp_manager", None), "reme", None)
+    return bool(getattr(reme_config, "enable_state_tool_retrieval", False))
+
 @dataclass
 class TaskExpConfig:
     add_exp: List[bool]  #长度等于 rollout_n
@@ -96,7 +119,7 @@ class ExperienceManager(object):
             self.em_client = EMClient(base_url=self._get_reme_base_url())
 
     def _use_state_tool_experience(self) -> bool:
-        return bool(getattr(self.reme_config, "enable_state_tool_retrieval", False))
+        return uses_state_tool_guidance(self.config)
 
     def _get_reme_base_url(self) -> str:
         if self._use_state_tool_experience():
@@ -441,7 +464,62 @@ class ExperienceWorker(object):
         self.artifact_recorder = None
 
     def _use_state_tool_experience(self) -> bool:
-        return bool(getattr(self.config.exp_manager.reme, "enable_state_tool_retrieval", False))
+        return uses_state_tool_guidance(self.config)
+
+    def get_state_tool_ablation_mode(self) -> str:
+        return get_state_tool_ablation_mode(self.config)
+
+    def should_force_state_tool_ablation(self) -> bool:
+        return self.get_state_tool_ablation_mode() in STATE_TOOL_ABLATION_TOOL_MODES
+
+    def is_no_tool_second_chance_mode(self) -> bool:
+        return self.get_state_tool_ablation_mode() in STATE_TOOL_ABLATION_NO_TOOL_SECOND_CHANCE_MODES
+
+    def get_no_tool_second_chance_mode(self) -> str:
+        mode = self.get_state_tool_ablation_mode()
+        if mode in STATE_TOOL_ABLATION_NO_TOOL_SECOND_CHANCE_MODES:
+            return mode
+        return ""
+
+    def get_no_tool_second_chance_ratio(self) -> float:
+        ablation_config = getattr(self.config.exp_manager, "state_tool_ablation", None)
+        ratio = getattr(ablation_config, "random_second_chance_ratio", 0.0)
+        try:
+            ratio = float(ratio)
+        except (TypeError, ValueError):
+            ratio = 0.0
+        return max(0.0, min(1.0, ratio))
+
+    def get_no_tool_second_chance_seed(self) -> int:
+        ablation_config = getattr(self.config.exp_manager, "state_tool_ablation", None)
+        seed = getattr(ablation_config, "random_second_chance_seed", 0)
+        try:
+            return int(seed)
+        except (TypeError, ValueError):
+            return 0
+
+    def get_no_tool_second_chance_retries(self) -> int:
+        ablation_config = getattr(self.config.exp_manager, "state_tool_ablation", None)
+        retries = getattr(ablation_config, "no_tool_second_chance_retries", 1)
+        try:
+            retries = int(retries)
+        except (TypeError, ValueError):
+            retries = 1
+        return max(0, retries)
+
+    def get_guided_generation_retries(self) -> int:
+        ablation_config = getattr(self.config.exp_manager, "state_tool_ablation", None)
+        retries = getattr(ablation_config, "guided_generation_retries", 2)
+        try:
+            retries = int(retries)
+        except (TypeError, ValueError):
+            retries = 2
+        return max(0, retries)
+
+    def get_state_tool_fallback_text(self) -> str:
+        ablation_config = getattr(self.config.exp_manager, "state_tool_ablation", None)
+        fallback_text = getattr(ablation_config, "fallback_text", "No matching state memories found")
+        return str(fallback_text)
 
     def _get_reme_base_url(self) -> str:
         reme_config = self.config.exp_manager.reme
@@ -671,6 +749,7 @@ class ExperienceWorker(object):
                 "topk": [],
                 "raw_experience": "",
                 "formatted_experience": "",
+                "retrieval_mode": self.get_state_tool_ablation_mode(),
             }
 
         intent = str(payload.get("current_intent", "")).strip()
@@ -678,15 +757,31 @@ class ExperienceWorker(object):
         obs = str(payload.get("current_observation", "")).strip()
         issue_type = str(payload.get("issue_type", "")).strip()
         query = self._build_declarative_query(intent, action, obs, issue_type)
-
-        self._ensure_em_client()
+        ablation_mode = self.get_state_tool_ablation_mode()
+        retrieval_mode = ablation_mode if ablation_mode in STATE_TOOL_ABLATION_TOOL_MODES else "tool_real"
         reme_config = self.config.exp_manager.reme
-        history_experience = self.em_client.call_context_generator(
-            state=query,
-            retrieve_top_k=reme_config.retrieve_top_k,
-            workspace_id=reme_config.workspace_id,
-        )
-        topk_list = self._build_state_retrieval_topk(history_experience)
+
+        if retrieval_mode == "tool_empty":
+            history_experience: Any = ""
+            topk_list: List[Dict[str, Any]] = []
+        elif retrieval_mode == "tool_fallback":
+            history_experience = self.get_state_tool_fallback_text()
+            topk_list = [{
+                "exp_id": "ablation_fallback",
+                "score": 1.0,
+                "when_to_use": "Use only for ablation; indicates retrieval was intentionally replaced with a fixed fallback.",
+                "content": history_experience,
+                "source_task_id": None,
+                "source_traj_id": None,
+            }]
+        else:
+            self._ensure_em_client()
+            history_experience = self.em_client.call_context_generator(
+                state=query,
+                retrieve_top_k=reme_config.retrieve_top_k,
+                workspace_id=reme_config.workspace_id,
+            )
+            topk_list = self._build_state_retrieval_topk(history_experience)
 
         if hasattr(self, 'artifact_recorder') and self.artifact_recorder and self.artifact_recorder.enable:
             try:
@@ -705,9 +800,10 @@ class ExperienceWorker(object):
                 "topk": topk_list,
                 "raw_experience": "",
                 "formatted_experience": "",
+                "retrieval_mode": retrieval_mode,
             }
 
-        if self._should_replace_with_dummy_experience():
+        if retrieval_mode == "tool_real" and self._should_replace_with_dummy_experience():
             history_experience = self._build_same_token_dummy_experience(str(history_experience))
 
         formatted_experience = self.experience_template.format(history_experience)
@@ -717,6 +813,7 @@ class ExperienceWorker(object):
             "topk": topk_list,
             "raw_experience": history_experience,
             "formatted_experience": formatted_experience,
+            "retrieval_mode": retrieval_mode,
         }
 
     def retrieve_state_tool_experience(
@@ -820,6 +917,9 @@ class ExperienceWorker(object):
             Tuple[List[dict], TrajExpConfig]: Updated messages and modified trajectory experience config.
         """
         if self._use_state_tool_experience():
+            if self.should_force_state_tool_ablation():
+                traj_exp_config.add_exp = True
+                return self._inject_experience_guidance_tool(init_messages), traj_exp_config
             if not traj_exp_config.add_exp:
                 return init_messages, traj_exp_config
             return self._inject_experience_guidance_tool(init_messages), traj_exp_config

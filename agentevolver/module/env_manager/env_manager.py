@@ -485,6 +485,9 @@ class ParallelEnvManager(object):
             "state_experience_tool_repeat_calls_after_injection": cmt.metadata.get("state_experience_tool_repeat_calls_after_injection", 0),
             "state_experience_tool_retrieved_char_count": cmt.metadata.get("state_experience_tool_retrieved_char_count", 0),
             "state_experience_tool_retrieved_token_count": cmt.metadata.get("state_experience_tool_retrieved_token_count", 0),
+            "state_tool_ablation_mode": cmt.metadata.get("state_tool_ablation_mode", "standard"),
+            "no_tool_second_chance_calls": cmt.metadata.get("no_tool_second_chance_calls", 0),
+            "no_tool_second_chance_steps": cmt.metadata.get("no_tool_second_chance_steps", []),
         }
         return extras
 

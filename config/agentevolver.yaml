@@ -198,6 +198,25 @@ exp_manager:
   replace_experience_with_same_token_dummy: false
   # preferred fragment for dummy text; should ideally map to one token under the active tokenizer
   same_token_dummy_fragment: "x"
+  state_tool_ablation:
+    # "standard" preserves the original behavior controlled by exp_manager.reme.enable_state_tool_retrieval.
+    # Experiment modes:
+    # 1) "baseline"                   -> no tool, no second chance
+    # 2) "all_second_chance_no_tool"  -> no tool, every step gets one extra LLM call with the same prompt
+    # 3) "tool_empty"                 -> tool-guided retry, retrieval is forced to empty
+    # 4) "tool_fallback"              -> tool-guided retry, retrieval is replaced by fallback_text
+    # 5) "tool_real"                  -> tool-guided retry, use real state-memory retrieval
+    # 6) "random_second_chance_no_tool" -> no tool, a fixed ratio of steps get one extra LLM call
+    mode: "standard"
+    # Used by mode=random_second_chance_no_tool. This is applied at the step level.
+    random_second_chance_ratio: 0.0
+    random_second_chance_seed: 0
+    # Number of extra no-tool generations after the first attempt; set to 1 for a single "second chance".
+    no_tool_second_chance_retries: 1
+    # Number of guided retries after an experience-tool call. Keep 2 to match the current implementation.
+    guided_generation_retries: 2
+    # Used by mode=tool_fallback.
+    fallback_text: "No matching state memories found"
   # whether to init experience pool before training
   init_exp_before_training: false
   # whether to only init experience pool
