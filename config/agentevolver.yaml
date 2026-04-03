@@ -71,6 +71,8 @@ actor_rollout_ref:
     max_env_len: 4096
     sparse: true
     force_think: false
+    enable_linear_short_think_hint: false
+    linear_short_think_hint_prompt: "\n\nAdditional requirement: If you think before answering, keep it very brief and concise. Do not overthink. Focus only on the minimum reasoning needed for the next action or answer."
   actor:
     # clip range high for off-policy samples
     off_cliprange_high: 0.6

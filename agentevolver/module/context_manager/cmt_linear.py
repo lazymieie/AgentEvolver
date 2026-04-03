@@ -52,6 +52,17 @@ class Linear_CMT(Trajectory, ContextManagerBase):
         self.max_env_output_length: int = self.config.actor_rollout_ref.rollout.max_env_len
         self.blackout_token_combo = tokenizer.encode("<|im_start|>assistant\n")
         self.generated_token_cnt = 0
+        self.enable_linear_short_think_hint = getattr(
+            self.config.actor_rollout_ref.rollout,
+            "enable_linear_short_think_hint",
+            False,
+        )
+        self.linear_short_think_hint_prompt = getattr(
+            self.config.actor_rollout_ref.rollout,
+            "linear_short_think_hint_prompt",
+            "\n\nAdditional requirement: If you think before answering, keep it very brief and concise. "
+            "Do not overthink. Focus only on the minimum reasoning needed for the next action or answer.",
+        )
 
         self.terminal_rewards_dict = {}
         self.discarded = False
@@ -217,7 +228,40 @@ class Linear_CMT(Trajectory, ContextManagerBase):
         Returns:
             The result of the `prepare_previous_context` function call.
         """
-        return self.prepare_previous_context(mod='future')  # ⭐ Prepares the context for the next LLM interaction
+        message_arr = self.prepare_previous_context(mod='future')
+        return self._append_short_think_hint(message_arr)  # ⭐ Prepares the context for the next LLM interaction
+
+    def _append_short_think_hint(self, message_arr: List[dict]) -> List[dict]:
+        """
+        Appends a lightweight prompt to the last input message so the model keeps its reasoning brief.
+
+        This is independent from `/no_think`: it only nudges the model to think less, not to disable
+        thinking entirely.
+
+        Args:
+            message_arr (List[dict]): Messages that will be sent to the model.
+
+        Returns:
+            List[dict]: The possibly patched message list.
+        """
+        if not self.enable_linear_short_think_hint or not message_arr:
+            return message_arr
+
+        last_message = message_arr[-1]
+        if last_message.get("role") not in {"user", "system"}:
+            return message_arr
+
+        content = last_message.get("content")
+        if not isinstance(content, str) or not content.strip():
+            return message_arr
+        if "/no_think" in content:
+            return message_arr
+        if self.linear_short_think_hint_prompt in content:
+            return message_arr
+
+        patched_messages = copy.deepcopy(message_arr)
+        patched_messages[-1]["content"] = content + self.linear_short_think_hint_prompt
+        return patched_messages
 
 
     def save_init_input(self, init_input_arr:list, add_nothink: bool=False):
