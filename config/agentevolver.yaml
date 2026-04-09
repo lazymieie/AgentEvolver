@@ -223,6 +223,12 @@ exp_manager:
   init_exp_only: false
   # which split to use when initializing the experience pool: ["validate", "train"]
   init_exp_pool_split: "validate"
+  # directory used to dump rollout trajectories for init-exp and to replay summarization without GPU
+  init_exp_trajectory_dir: ${trainer.rollout_data_dir}/init_exp_pool/${exp_manager.init_exp_pool_split}
+  # file pattern used by the offline init-exp-from-trajectory script
+  init_exp_trajectory_glob: "*.jsonl"
+  # whether the offline init-exp-from-trajectory script should scan subdirectories
+  init_exp_trajectory_recursive: true
   # max concurrent summarize requests when initializing the experience pool; 1 means strictly sequential
   init_exp_pool_max_workers: 4
   # HTTP timeout in seconds for init experience-pool summarization; null means wait indefinitely

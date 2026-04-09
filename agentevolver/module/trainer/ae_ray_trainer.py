@@ -64,6 +64,7 @@ from agentevolver.module.task_manager import TaskManager,NaiveTaskObjectiveRetri
 from agentevolver.schema.task import Task
 from agentevolver.schema.trajectory import Trajectory
 
+from agentevolver.utils.trajectory_io import dump_trajectories_to_jsonl
 from agentevolver.utils.tracking import ValidationGenerationsLogger
 
 from agentevolver.module.adv_processor.adca_grpo_pipeline import apply_adca_grpo
@@ -1059,6 +1060,22 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
 
         print(f"Dumped generations to {filename}")
 
+    def _dump_init_exp_pool_trajectories(
+        self,
+        trajectories: List[Trajectory],
+        init_split: str,
+        batch_idx: int,
+    ) -> str | None:
+        dump_dir = self.config.exp_manager.get("init_exp_trajectory_dir", None)
+        if not dump_dir or not trajectories:
+            return None
+
+        filename = f"{init_split}_batch_{batch_idx:05d}.jsonl"
+        dump_path = os.path.join(dump_dir, filename)
+        dump_trajectories_to_jsonl(dump_path, trajectories)
+        print(f"[InitExpPool] dumped {len(trajectories)} trajectories to {dump_path}")
+        return dump_path
+
 
     def _validate(self):
         """
@@ -1642,6 +1659,11 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                     epoch=f"{epoch_prefix}.{i}",
                 )  # ⭐ Execute the rollout to generate trajectories
                 print("=" * 10 + f" end {init_split} rollout " + "=" * 10)
+                self._dump_init_exp_pool_trajectories(
+                    trajectories,
+                    init_split=init_split,
+                    batch_idx=i,
+                )
                 self.async_rollout_manager.sleep()
 
             # summarize in batch: updating task/state experience pool according to the shared switch
