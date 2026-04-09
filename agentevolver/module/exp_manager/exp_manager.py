@@ -1051,7 +1051,7 @@ class ExperienceWorker(object):
         experience = ""
         cleaned_message = message
 
-        if metadata_config.get("task_train_mode", "discard") == "discard": 
+        if metadata_config.get("task_train_exp_mode", "discard") == "discard": 
             pattern = re.escape(self.experience_template).replace(r'\{\}', '(.*?)')
             match = re.search(pattern, message, re.DOTALL)
             if match:

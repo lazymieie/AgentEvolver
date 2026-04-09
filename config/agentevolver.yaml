@@ -65,7 +65,7 @@ actor_rollout_ref:
     custom_dataflow_cls:
       path: ""
       name: ""
-    max_env_worker: 32
+    max_env_worker: 16
     context_template: "linear"
     context_template_train_sp_action: false
     max_env_len: 4096
@@ -224,7 +224,7 @@ exp_manager:
   # which split to use when initializing the experience pool: ["validate", "train"]
   init_exp_pool_split: "validate"
   # max concurrent summarize requests when initializing the experience pool; 1 means strictly sequential
-  init_exp_pool_max_workers: 1
+  init_exp_pool_max_workers: 4
   # HTTP timeout in seconds for init experience-pool summarization; null means wait indefinitely
   init_exp_summary_request_timeout: null
   # batch size for experience summarization

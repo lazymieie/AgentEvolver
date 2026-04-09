@@ -174,7 +174,7 @@ class MemoryNewCMT(LinearThinkCMT):
         self.memory_extract_trigger_token_num = getattr(
             config.actor_rollout_ref.rollout, 
             'context_template_memory_extract_trigger_token_num', 
-            8000
+            12000
         )
 
     def _get_seq_length(self, messages: List[dict]) -> int:
