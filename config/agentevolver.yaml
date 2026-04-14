@@ -203,10 +203,11 @@ exp_manager:
     # Experiment modes:
     # 1) "baseline"                   -> no tool, no second chance
     # 2) "all_second_chance_no_tool"  -> no tool, every step gets one extra LLM call with the same prompt
-    # 3) "tool_empty"                 -> tool-guided retry, retrieval is forced to empty
-    # 4) "tool_fallback"              -> tool-guided retry, retrieval is replaced by fallback_text
-    # 5) "tool_real"                  -> tool-guided retry, use real state-memory retrieval
-    # 6) "random_second_chance_no_tool" -> no tool, a fixed ratio of steps get one extra LLM call
+    # 3) "tool_prompt_only"           -> inject a non-callable state-guidance prompt into the system prompt, but disable retrieval/retry handling
+    # 4) "tool_empty"                 -> tool-guided retry, retrieval is forced to empty
+    # 5) "tool_fallback"              -> tool-guided retry, retrieval is replaced by fallback_text
+    # 6) "tool_real"                  -> tool-guided retry, use real state-memory retrieval
+    # 7) "random_second_chance_no_tool" -> no tool, a fixed ratio of steps get one extra LLM call
     mode: "standard"
     # Used by mode=random_second_chance_no_tool. This is applied at the step level.
     random_second_chance_ratio: 0.0

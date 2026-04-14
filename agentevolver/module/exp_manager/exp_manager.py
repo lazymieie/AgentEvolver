@@ -51,7 +51,21 @@ EXPERIENCE_GUIDANCE_TOOL = {
     }
 }
 
+EXPERIENCE_GUIDANCE_PROMPT_ONLY_TEXT = (
+    "\n\n[State Guidance]\n"
+    "When you encounter an API error, missing information, or feel stuck, do an internal self-check "
+    "before taking the next action.\n"
+    "Review internally:\n"
+    "- current_intent: the specific subtask you are trying to complete now\n"
+    "- last_action: the exact tool name and parameters you just used\n"
+    "- current_observation: the exact error message, unexpected result, or current environment state\n"
+    "- issue_type: one of api_error, stuck_in_loop, missing_parameter, uncertain_next_step, constraint_violation\n"
+    "Use this self-check internally to choose the next action. Do not output this checklist, and do not emit "
+    "any get_experience_guidance tool call.\n"
+)
+
 STATE_TOOL_ABLATION_DEFAULT_MODE = "standard"
+STATE_TOOL_ABLATION_PROMPT_ONLY_MODES = {"tool_prompt_only"}
 STATE_TOOL_ABLATION_TOOL_MODES = {"tool_empty", "tool_fallback", "tool_real"}
 STATE_TOOL_ABLATION_NO_TOOL_SECOND_CHANCE_MODES = {
     "all_second_chance_no_tool",
@@ -543,6 +557,16 @@ class ExperienceWorker(object):
                 break
         return patched_messages
 
+    def _inject_experience_guidance_prompt_only(self, init_messages: List[dict]) -> List[dict]:
+        patched_messages = [dict(msg) for msg in init_messages]
+        for message in patched_messages:
+            if message.get("role") == "system" and isinstance(message.get("content"), str):
+                if EXPERIENCE_GUIDANCE_PROMPT_ONLY_TEXT.strip() in message["content"]:
+                    break
+                message["content"] = message["content"] + EXPERIENCE_GUIDANCE_PROMPT_ONLY_TEXT
+                break
+        return patched_messages
+
     def _build_declarative_query(self, intent: str, action: str, obs: str, issue_type: str) -> str:
         if issue_type == "api_error":
             return f"The agent is trying to {intent} and called {action}, but encountered the API error: {obs}."
@@ -916,10 +940,14 @@ class ExperienceWorker(object):
         Returns:
             Tuple[List[dict], TrajExpConfig]: Updated messages and modified trajectory experience config.
         """
+        ablation_mode = self.get_state_tool_ablation_mode()
+        if ablation_mode in STATE_TOOL_ABLATION_PROMPT_ONLY_MODES:
+            return self._inject_experience_guidance_prompt_only(init_messages), traj_exp_config
+        if ablation_mode in STATE_TOOL_ABLATION_TOOL_MODES:
+            traj_exp_config.add_exp = True
+            return self._inject_experience_guidance_tool(init_messages), traj_exp_config
+
         if self._use_state_tool_experience():
-            if self.should_force_state_tool_ablation():
-                traj_exp_config.add_exp = True
-                return self._inject_experience_guidance_tool(init_messages), traj_exp_config
             if not traj_exp_config.add_exp:
                 return init_messages, traj_exp_config
             return self._inject_experience_guidance_tool(init_messages), traj_exp_config
