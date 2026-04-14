@@ -130,6 +130,7 @@ class AgentFlow(BaseAgentFlow):
         self.cmt.metadata["state_experience_tool_retrieved_char_count"] = 0
         self.cmt.metadata["state_experience_tool_retrieved_token_count"] = 0
         self.cmt.metadata["used_state_experience_tool"] = False
+        self.cmt.metadata["state_experience_tool_traces"] = []
         self.cmt.metadata["state_tool_ablation_mode"] = self.exp_worker.get_state_tool_ablation_mode()
         self.cmt.metadata["no_tool_second_chance_calls"] = 0
         self.cmt.metadata["no_tool_second_chance_steps"] = []
@@ -241,6 +242,14 @@ class AgentFlow(BaseAgentFlow):
                 logger.warning(f"Failed to record repeated state experience tool event: {e}")
 
         def write_state_tool_trace(step: int, trace: Dict[str, Any]) -> None:
+            stored_traces = self.cmt.metadata.get("state_experience_tool_traces")
+            if not isinstance(stored_traces, list):
+                stored_traces = []
+                self.cmt.metadata["state_experience_tool_traces"] = stored_traces
+            stored_traces.append({
+                "step": step,
+                **trace,
+            })
             if not hasattr(self, 'artifact_recorder') or not self.artifact_recorder or not self.artifact_recorder.enable:
                 return
             try:
@@ -592,6 +601,9 @@ class AgentFlow(BaseAgentFlow):
 
         self.cmt.reward = Reward(outcome=score, success_rate=success_rate, madness=self.cmt.compute_madness(), description=reason)  # ⭐ Set the reward for the context
         self.cmt.reward = self.cmt.reward_patch(self.cmt.reward)
+        self.cmt.metadata["reward_outcome"] = float(self.cmt.reward.outcome)
+        self.cmt.metadata["reward_success_rate"] = float(self.cmt.reward.success_rate)
+        self.cmt.metadata["reward_description"] = self.cmt.reward.description
         
         # DEBUG (disabled): Final reward assignment
         # print_dict({
@@ -652,6 +664,31 @@ class AgentFlow(BaseAgentFlow):
                         "description": reason,
                     },
                     grader_name=getattr(self._reward_calculator, '__class__', {}).__name__ if self._reward_calculator else "env",
+                )
+                self.artifact_recorder.write_state_experience_tool_trajectory(
+                    task_id=task_id,
+                    traj_id=traj_id,
+                    query=query,
+                    state_tool_ablation_mode=str(self.cmt.metadata.get("state_tool_ablation_mode", "standard")),
+                    used_state_experience_tool=bool(self.cmt.metadata.get("used_state_experience_tool", False)),
+                    state_experience_tool_calls=int(self.cmt.metadata.get("state_experience_tool_calls", 0) or 0),
+                    state_experience_tool_call_steps=list(self.cmt.metadata.get("state_experience_tool_call_steps", []) or []),
+                    state_experience_tool_injections=int(self.cmt.metadata.get("state_experience_tool_injections", 0) or 0),
+                    state_experience_tool_nonempty_retrievals=int(self.cmt.metadata.get("state_experience_tool_nonempty_retrievals", 0) or 0),
+                    state_experience_tool_empty_results=int(self.cmt.metadata.get("state_experience_tool_empty_results", 0) or 0),
+                    state_experience_tool_overflow_reverts=int(self.cmt.metadata.get("state_experience_tool_overflow_reverts", 0) or 0),
+                    state_experience_tool_repeat_calls_after_injection=int(self.cmt.metadata.get("state_experience_tool_repeat_calls_after_injection", 0) or 0),
+                    state_experience_tool_retrieved_token_count=int(self.cmt.metadata.get("state_experience_tool_retrieved_token_count", 0) or 0),
+                    completed_env_steps=int(self.cmt.metadata.get("completed_env_steps", 0) or 0),
+                    stop_reason=str(self.cmt.metadata.get("stop_reason", "")),
+                    generation_failure=bool(self.cmt.metadata.get("generation_failure", False)),
+                    is_terminated=bool(self.cmt.is_terminated),
+                    success=bool(self.cmt.reward is not None and self.cmt.reward.outcome > 0),
+                    reward_value=float(self.cmt.reward.outcome) if self.cmt.reward is not None else 0.0,
+                    reward_success_rate=float(self.cmt.reward.success_rate) if self.cmt.reward is not None else 0.0,
+                    reward_description=self.cmt.reward.description if self.cmt.reward is not None else "",
+                    experience_tool_call_issues=list(self.cmt.metadata.get("experience_tool_call_issues", []) or []),
+                    tool_traces=list(self.cmt.metadata.get("state_experience_tool_traces", []) or []),
                 )
             except Exception as e:
                 import logging

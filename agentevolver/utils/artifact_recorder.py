@@ -576,6 +576,68 @@ class ArtifactRecorder:
         }
         self.write_jsonl("state_experience_tool_events", record, global_step)
 
+    def write_state_experience_tool_trajectory(
+        self,
+        task_id: str,
+        traj_id: str,
+        query: str,
+        state_tool_ablation_mode: str,
+        used_state_experience_tool: bool,
+        state_experience_tool_calls: int,
+        state_experience_tool_call_steps: List[int],
+        state_experience_tool_injections: int,
+        state_experience_tool_nonempty_retrievals: int,
+        state_experience_tool_empty_results: int,
+        state_experience_tool_overflow_reverts: int,
+        state_experience_tool_repeat_calls_after_injection: int,
+        state_experience_tool_retrieved_token_count: int,
+        completed_env_steps: int,
+        stop_reason: str,
+        generation_failure: bool,
+        is_terminated: bool,
+        success: bool,
+        reward_value: float,
+        reward_success_rate: float,
+        reward_description: str,
+        experience_tool_call_issues: Optional[List[Dict[str, Any]]] = None,
+        tool_traces: Optional[List[Dict[str, Any]]] = None,
+        global_step: Optional[int] = None,
+    ):
+        """Record one trajectory-level summary for state-experience-tool usage."""
+        if not self.enable or not self.dump_experiences:
+            return
+
+        if not used_state_experience_tool:
+            return
+
+        record: Dict[str, Any] = {
+            "task_id": task_id,
+            "traj_id": traj_id,
+            "query": self._truncate_str(query),
+            "state_tool_ablation_mode": state_tool_ablation_mode,
+            "used_state_experience_tool": used_state_experience_tool,
+            "state_experience_tool_calls": state_experience_tool_calls,
+            "state_experience_tool_call_steps": state_experience_tool_call_steps,
+            "state_experience_tool_injections": state_experience_tool_injections,
+            "state_experience_tool_nonempty_retrievals": state_experience_tool_nonempty_retrievals,
+            "state_experience_tool_empty_results": state_experience_tool_empty_results,
+            "state_experience_tool_overflow_reverts": state_experience_tool_overflow_reverts,
+            "state_experience_tool_repeat_calls_after_injection": state_experience_tool_repeat_calls_after_injection,
+            "state_experience_tool_retrieved_token_count": state_experience_tool_retrieved_token_count,
+            "completed_env_steps": completed_env_steps,
+            "stop_reason": stop_reason,
+            "generation_failure": generation_failure,
+            "is_terminated": is_terminated,
+            "success": success,
+            "reward_value": reward_value,
+            "reward_success_rate": reward_success_rate,
+            "reward_description": self._truncate_str(reward_description),
+            "experience_tool_call_issues": experience_tool_call_issues or [],
+            "tool_trace_count": len(tool_traces or []),
+            "tool_traces": tool_traces or [],
+        }
+        self.write_jsonl("state_experience_tool_trajectories", record, global_step, force=True)
+
     def write_experience_stripping(
         self,
         task_id: str,
@@ -726,6 +788,12 @@ Complete state-level experience-tool traces during rollout, including how the to
 - **Fields**: task_id, traj_id, step, event_type, trace (tool payload, retrieval query/topk, injected experience, guided retries, post-guidance action, env output, context snapshots)
 - **When**: Recorded for every state-experience-tool usage episode, plus repeated-call sub-events after guidance injection/attempted injection
 
+### state_experience_tool_trajectories.jsonl
+Trajectory-level summaries for trajectories that called the state experience tool.
+- **Source**: `agentevolver.module.agent_flow.agent_flow.AgentFlow.execute()`
+- **Fields**: task_id, traj_id, query, state_tool_ablation_mode, tool-call counts/steps, retrieval/injection counters, full tool_traces, success, reward_value, stop_reason
+- **When**: Recorded once per trajectory if the trajectory called the state experience tool at least once
+
 ### generation_failures.jsonl
 Generation failures during rollout, including repeated experience-guidance requests.
 - **Source**: `agentevolver.module.agent_flow.agent_flow.AgentFlow.execute()`
@@ -786,4 +854,3 @@ python3 -m agentevolver.main_ppo ... debug_artifacts.enable=true
                 f.write(readme_content)
         except Exception as e:
             _get_logger().warning(f"Failed to write README: {e}")
-

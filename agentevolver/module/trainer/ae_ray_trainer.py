@@ -1102,6 +1102,11 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
         trajectory_metric_task_ids = []
         trajectory_metric_data_sources = []
         trajectory_metric_scores = []
+        val_tool_called_flags = []
+        val_tool_injected_flags = []
+        val_tool_empty_result_flags = []
+        val_tool_success_flags = []
+        val_tool_call_counts = []
 
         # --- realtime reward stats ---
         total_r0 = 0
@@ -1291,6 +1296,14 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                     trajectory_metric_scores.append(
                         float(traj.reward.outcome) if traj.reward is not None else 0.0
                     )
+                    traj_metadata = getattr(traj, "metadata", {}) or {}
+                    tool_call_count = int(traj_metadata.get("state_experience_tool_calls", 0) or 0)
+                    tool_called = bool(traj_metadata.get("used_state_experience_tool", False) or tool_call_count > 0)
+                    val_tool_called_flags.append(float(tool_called))
+                    val_tool_injected_flags.append(float((traj_metadata.get("state_experience_tool_injections", 0) or 0) > 0))
+                    val_tool_empty_result_flags.append(float((traj_metadata.get("state_experience_tool_empty_results", 0) or 0) > 0))
+                    val_tool_success_flags.append(float(traj.reward.outcome > 0) if traj.reward is not None else 0.0)
+                    val_tool_call_counts.append(float(tool_call_count))
 
                 test_output_gen_batch = self.env_manager.to_dataproto(trajectories)
                 self.async_rollout_manager.sleep()
@@ -1422,12 +1435,34 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
             f"r1={total_r1} ({total_r1/max(total_n,1):.3f}), "
             f"other={total_r_other} ({total_r_other/max(total_n,1):.3f})\n"
         )
-        print(
-            f"\n[VAL][SUMMARY] total_n={total_n}, "
-            f"r0={total_r0} ({total_r0/max(total_n,1):.3f}), "
-            f"r1={total_r1} ({total_r1/max(total_n,1):.3f}), "
-            f"other={total_r_other} ({total_r_other/max(total_n,1):.3f})\n"
-        )
+        if val_tool_called_flags:
+            tool_called_arr = np.asarray(val_tool_called_flags, dtype=np.float32)
+            tool_injected_arr = np.asarray(val_tool_injected_flags, dtype=np.float32)
+            tool_empty_arr = np.asarray(val_tool_empty_result_flags, dtype=np.float32)
+            tool_success_arr = np.asarray(val_tool_success_flags, dtype=np.float32)
+            tool_call_count_arr = np.asarray(val_tool_call_counts, dtype=np.float32)
+
+            def _masked_rate(mask: np.ndarray, values: np.ndarray) -> float:
+                if mask.size == 0 or not np.any(mask):
+                    return 0.0
+                return float(values[mask].mean())
+
+            called_mask = tool_called_arr > 0
+            injected_mask = tool_injected_arr > 0
+            empty_mask = tool_empty_arr > 0
+            print(
+                f"[VAL][STATE_TOOL] called_traj={int(called_mask.sum())}/{len(called_mask)} "
+                f"({float(called_mask.mean()):.3f}), "
+                f"success_when_called={_masked_rate(called_mask, tool_success_arr):.3f}, "
+                f"success_when_not_called={_masked_rate(~called_mask, tool_success_arr):.3f}, "
+                f"injected_traj={int(injected_mask.sum())}/{len(injected_mask)} "
+                f"({float(injected_mask.mean()):.3f}), "
+                f"success_when_injected={_masked_rate(injected_mask, tool_success_arr):.3f}, "
+                f"empty_result_traj={int(empty_mask.sum())}/{len(empty_mask)} "
+                f"({float(empty_mask.mean()):.3f}), "
+                f"success_when_empty_result={_masked_rate(empty_mask, tool_success_arr):.3f}, "
+                f"calls_per_called_traj={_masked_rate(called_mask, tool_call_count_arr):.3f}"
+            )
         self._maybe_log_val_generations(inputs=sample_inputs, outputs=sample_outputs, scores=sample_scores)
 
         # dump generations
@@ -1471,6 +1506,37 @@ class AgentEvolverRayPPOTrainer(RayPPOTrainer):
                         metric_sec = "val-aux"
                     pfx = f"{metric_sec}/{data_source}/{var_name}/{metric_name}"
                     metric_dict[pfx] = metric_val
+
+        if val_tool_called_flags:
+            tool_called_arr = np.asarray(val_tool_called_flags, dtype=np.float32)
+            tool_injected_arr = np.asarray(val_tool_injected_flags, dtype=np.float32)
+            tool_empty_arr = np.asarray(val_tool_empty_result_flags, dtype=np.float32)
+            tool_success_arr = np.asarray(val_tool_success_flags, dtype=np.float32)
+            tool_call_count_arr = np.asarray(val_tool_call_counts, dtype=np.float32)
+
+            def _subset_mean(mask: np.ndarray, values: np.ndarray) -> float:
+                if mask.size == 0 or not np.any(mask):
+                    return 0.0
+                return float(values[mask].mean())
+
+            called_mask = tool_called_arr > 0
+            injected_mask = tool_injected_arr > 0
+            empty_mask = tool_empty_arr > 0
+            metric_dict.update({
+                "val-aux/overall/state_tool/called_traj_count": float(called_mask.sum()),
+                "val-aux/overall/state_tool/called_traj_ratio": float(called_mask.mean()),
+                "val-aux/overall/state_tool/called_traj_success_rate": _subset_mean(called_mask, tool_success_arr),
+                "val-aux/overall/state_tool/not_called_traj_success_rate": _subset_mean(~called_mask, tool_success_arr),
+                "val-aux/overall/state_tool/call_count_mean": float(tool_call_count_arr.mean()) if len(tool_call_count_arr) > 0 else 0.0,
+                "val-aux/overall/state_tool/call_count_max": float(tool_call_count_arr.max()) if len(tool_call_count_arr) > 0 else 0.0,
+                "val-aux/overall/state_tool/calls_per_called_traj": _subset_mean(called_mask, tool_call_count_arr),
+                "val-aux/overall/state_tool/injected_traj_count": float(injected_mask.sum()),
+                "val-aux/overall/state_tool/injected_traj_ratio": float(injected_mask.mean()),
+                "val-aux/overall/state_tool/injected_traj_success_rate": _subset_mean(injected_mask, tool_success_arr),
+                "val-aux/overall/state_tool/empty_result_traj_count": float(empty_mask.sum()),
+                "val-aux/overall/state_tool/empty_result_traj_ratio": float(empty_mask.mean()),
+                "val-aux/overall/state_tool/empty_result_traj_success_rate": _subset_mean(empty_mask, tool_success_arr),
+            })
 
         return metric_dict
     
